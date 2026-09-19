@@ -20,6 +20,9 @@
 #include <mutex>
 
 #include "PowerStatus.h"
+#if MESHSAT_IRIDIUM
+#include "meshsat/IridiumPipe.h"
+#endif
 
 #include "host/ble_gap.h"
 #include "host/ble_hs.h"
@@ -1042,6 +1045,10 @@ void NimbleBluetooth::setupService()
     BatteryCharacteristic->setValue(&initialLevel, 1);
     lastBatteryLevel = initialLevel;
     batteryService->start();
+
+#if MESHSAT_IRIDIUM
+    IridiumPipe::setupBleService(bleServer, config.bluetooth.mode != meshtastic_Config_BluetoothConfig_PairingMode_NO_PIN);
+#endif
 }
 
 /// Given a level between 0-100, update the BLE attribute
