@@ -35,6 +35,7 @@ static bool notifyFailed = false;
 static HardwareSerial modemUart(MESHSAT_IRIDIUM_UART_NUM);
 static BLEServer *bleServer = nullptr;
 static BLECharacteristic *txCharacteristic = nullptr;
+static BLECharacteristic *statusCharacteristic = nullptr;
 
 static StaticStreamBuffer_t incomingControl;
 static uint8_t incomingStorage[INCOMING_BYTES + 1];
@@ -103,6 +104,10 @@ void IridiumPipe::setupBleService(BLEServer *server, bool requireEncryption)
     rx->setCallbacks(&rxCallbacks);
     txCharacteristic = service->createCharacteristic(TX_UUID, txProperties);
     txCharacteristic->setCallbacks(&txCallbacks);
+    statusCharacteristic = service->createCharacteristic(STATUS_UUID, txProperties);
+    const uint8_t owner = pipeInstance ? static_cast<uint8_t>(pipeInstance->owner()) : 0;
+    const uint8_t status[2] = {CONTRACT_VERSION, owner};
+    statusCharacteristic->setValue(status, sizeof(status));
     service->start();
     LOG_INFO("MeshSat Iridium: BLE serial service up (%s)", requireEncryption ? "pairing required" : "open");
 }
@@ -121,14 +126,26 @@ void IridiumPipe::openUart()
 
 bool IridiumPipe::tryAcquireForNode()
 {
-    IridiumModemOwner expected = IridiumModemOwner::None;
-    return currentOwner.compare_exchange_strong(expected, IridiumModemOwner::Node);
+    if (currentOwner.load() != IridiumModemOwner::None)
+        return false;
+    setOwner(IridiumModemOwner::Node);
+    return true;
 }
 
 void IridiumPipe::releaseFromNode()
 {
-    IridiumModemOwner expected = IridiumModemOwner::Node;
-    currentOwner.compare_exchange_strong(expected, IridiumModemOwner::None);
+    if (currentOwner.load() == IridiumModemOwner::Node)
+        setOwner(IridiumModemOwner::None);
+}
+
+void IridiumPipe::setOwner(IridiumModemOwner owner)
+{
+    currentOwner.store(owner);
+    if (statusCharacteristic) {
+        const uint8_t status[2] = {CONTRACT_VERSION, static_cast<uint8_t>(owner)};
+        statusCharacteristic->setValue(status, sizeof(status));
+        statusCharacteristic->notify();
+    }
 }
 
 void IridiumPipe::onPhoneWrite(const uint8_t *data, size_t length)
@@ -154,6 +171,10 @@ int32_t IridiumPipe::runOnce()
     if (dropped > 0)
         LOG_WARN("MeshSat Iridium: %u bytes from the phone dropped, incoming buffer full", static_cast<unsigned>(dropped));
 
+    // Bytes a phone writes without owning the modem are dropped, so nothing stale runs later.
+    if (currentOwner.load() != IridiumModemOwner::Phone)
+        discardPhoneBytes();
+
     bool busy = false;
     switch (currentOwner.load()) {
     case IridiumModemOwner::Phone:
@@ -178,16 +199,29 @@ void IridiumPipe::updateOwner()
     const IridiumModemOwner owner = currentOwner.load();
     if (phoneSubscribed.load()) {
         if (owner == IridiumModemOwner::None) {
-            currentOwner.store(IridiumModemOwner::Phone);
+            setOwner(IridiumModemOwner::Phone);
             LOG_INFO("MeshSat Iridium: phone owns the modem");
         }
     } else if (owner == IridiumModemOwner::Phone) {
-        currentOwner.store(IridiumModemOwner::None);
         pendingLength = 0;
         if (incoming)
             xStreamBufferReset(incoming);
+        setOwner(IridiumModemOwner::None);
         LOG_INFO("MeshSat Iridium: phone released the modem");
     }
+}
+
+void IridiumPipe::discardPhoneBytes()
+{
+    if (!incoming)
+        return;
+    uint8_t scratch[COPY_CHUNK_BYTES];
+    size_t discarded = 0;
+    size_t count = 0;
+    while ((count = xStreamBufferReceive(incoming, scratch, sizeof(scratch), 0)) > 0)
+        discarded += count;
+    if (discarded > 0)
+        LOG_WARN("MeshSat Iridium: %u bytes written without owning the modem, discarded", static_cast<unsigned>(discarded));
 }
 
 bool IridiumPipe::pumpPhoneToModem()
