@@ -1,39 +1,85 @@
-<div align="center" markdown="1">
-
-<img src=".github/meshtastic_logo.png" alt="Meshtastic Logo" width="80"/>
-<h1>Meshtastic Firmware</h1>
-
-![GitHub release downloads](https://img.shields.io/github/downloads/meshtastic/firmware/total)
-[![CI](https://img.shields.io/github/actions/workflow/status/meshtastic/firmware/main_matrix.yml?branch=master&label=actions&logo=github&color=yellow)](https://github.com/meshtastic/firmware/actions/workflows/ci.yml)
-[![CLA assistant](https://cla-assistant.io/readme/badge/meshtastic/firmware)](https://cla-assistant.io/meshtastic/firmware)
-[![Fiscal Contributors](https://opencollective.com/meshtastic/tiers/badge.svg?label=Fiscal%20Contributors&color=deeppink)](https://opencollective.com/meshtastic/)
-[![Vercel](https://img.shields.io/static/v1?label=Powered%20by&message=Vercel&style=flat&logo=vercel&color=000000)](https://vercel.com?utm_source=meshtastic&utm_campaign=oss)
-
-<a href="https://trendshift.io/repositories/5524" target="_blank"><img src="https://trendshift.io/api/badge/repositories/5524" alt="meshtastic%2Ffirmware | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
-
-</div>
-
-</div>
-
 <div align="center">
-	<a href="https://meshtastic.org">Website</a>
-	-
-	<a href="https://meshtastic.org/docs/">Documentation</a>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/meshsat/meshsat/main/docs/images/mark-dark.png">
+  <img src="https://raw.githubusercontent.com/meshsat/meshsat/main/docs/images/mark-light.png" alt="MeshSat" width="190">
+</picture>
+
+### MeshSat node firmware: Meshtastic, plus an Iridium satellite modem on the same Bluetooth link.
+
+[![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue)](LICENSE)
+[![Based on Meshtastic 2.8.0](https://img.shields.io/badge/based%20on-Meshtastic%202.8.0-67EA94)](https://github.com/meshtastic/firmware/releases/tag/v2.8.0.47db0e3)
+![ESP32-S3 + RockBLOCK 9603](https://img.shields.io/badge/hardware-ESP32--S3%20%2B%20RockBLOCK%209603-555)
+
+[The node](https://github.com/meshsat/meshsat-esp32) ·
+[Iridium Bluetooth service](https://github.com/meshsat/meshsat-esp32/blob/main/docs/IRIDIUM-BLE.md) ·
+[Build and flash](#build-and-flash) ·
+[What is proven](#what-is-proven-and-what-is-not) ·
+[meshsat.net](https://meshsat.net)
+
 </div>
 
-## Overview
+This is the firmware for the [MeshSat node](https://github.com/meshsat/meshsat-esp32): a Meshtastic LoRa radio with a RockBLOCK 9603 Iridium modem in the same small case. It is the Meshtastic firmware plus one thing: a second Bluetooth service that gives the phone a binary-safe serial line to the modem. The [MeshSat Android](https://github.com/meshsat/meshsat-android) app connects once and uses both, the mesh and the satellite, over that one link.
 
-This repository contains the official device firmware for Meshtastic, an open-source LoRa mesh networking project designed for long-range, low-power communication without relying on internet or cellular infrastructure. The firmware supports various hardware platforms, including ESP32, nRF52, RP2040/RP2350, and Linux-based devices.
+Everything Meshtastic does, this does the same way. The phone does the satellite work: it speaks the 9603's AT commands through the pipe exactly as it would over a cable. The service's contract, with its UUIDs, owner status and pairing rules, is in [IRIDIUM-BLE.md](https://github.com/meshsat/meshsat-esp32/blob/main/docs/IRIDIUM-BLE.md).
 
-Meshtastic enables text messaging, location sharing, and telemetry over a decentralized mesh network, making it ideal for outdoor adventures, emergency preparedness, and remote operations.
+Based on Meshtastic® firmware. This project is not affiliated with or endorsed by Meshtastic LLC. For the upstream firmware, go to [meshtastic/firmware](https://github.com/meshtastic/firmware).
 
-### Get Started
+> **Status: pre-release.** This is a prototype under active development, not a finished product. It has never been deployed to a real user and has never been used in an actual emergency. See [What is proven, and what is not](#what-is-proven-and-what-is-not) before you rely on it for anything.
 
-- 🔧 **[Building Instructions](https://meshtastic.org/docs/development/firmware/build)** - Learn how to compile the firmware from source.
-- ⚡ **[Flashing Instructions](https://meshtastic.org/docs/getting-started/flashing-firmware/)** - Install or update the firmware on your device.
+## What this fork adds
 
-Join our community and help improve Meshtastic! 🚀
+| Env                          | Board                                      | RockBLOCK connection                                                                                                 |
+| ---------------------------- | ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `meshsat-tbeam-s3-rockblock` | LILYGO T-Beam Supreme (node v1)            | header PM1: GPIO43/44 on UART2, power from the AXP2101 DCDC5 rail, switched on at boot                               |
+| `meshsat-xiao-s3-rockblock`  | Seeed XIAO ESP32-S3 + Wio-SX1262 (node v0) | D6/D7, GPIO43/44 on UART1, external 5 V supply; the XIAO variant's GPS is compiled out because it uses the same pins |
 
-## Stats
+The Iridium pipe is in `src/meshsat/`. It hooks into upstream code in two places, both behind `#if MESHSAT_IRIDIUM`: the Bluetooth service setup in `src/nimble/NimbleBluetooth.cpp` and module setup in `src/modules/Modules.cpp`. Everything else is upstream, unchanged.
 
-![Alt](https://repobeats.axiom.co/api/embed/8025e56c482ec63541593cc5bd322c19d5c0bdcf.svg "Repobeats analytics image")
+## Build and flash
+
+Build with PlatformIO Core **6.1.19**. With 6.2.0 the build stops at `ModuleNotFoundError: SCons.Tool.FortranCommon`, because the platform pins SCons 4.8.1 and 6.2.0 brings 4.11.1.
+
+```sh
+pip install "platformio==6.1.19"
+pio run -e meshsat-tbeam-s3-rockblock
+```
+
+Flash over USB with esptool. On a board that ran something else, erase it first:
+
+```sh
+esptool --chip esp32s3 --port /dev/ttyACM0 erase-flash
+esptool --chip esp32s3 --port /dev/ttyACM0 write-flash \
+  0x0      .pio/build/meshsat-tbeam-s3-rockblock/firmware-meshsat-tbeam-s3-rockblock-*.factory.bin \
+  0x670000 .pio/build/meshsat-tbeam-s3-rockblock/littlefs-meshsat-tbeam-s3-rockblock-*.bin
+```
+
+Then set it up like any Meshtastic node: region, owner name and a fixed Bluetooth PIN. Updates go over USB the same way. Over-the-air updates are not supported by this fork.
+
+## What is proven, and what is not
+
+|                                                                        | State                                                                                       |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Meshtastic and Iridium services on one Bluetooth connection (XIAO, v0) | Verified 19 Sep 2026 with MeshSat Android and a laptop client                               |
+| Taking and releasing the modem                                         | Verified: STATUS `01 00`, `01 01`, `01 00`, and writes from a non-owner discarded           |
+| Long modem replies over notifications                                  | A 300-byte reply arrives intact, and a binary loopback of up to 270 bytes returns identical |
+| Satellite messages through the pipe                                    | One out and one in, 19 Sep 2026                                                             |
+| T-Beam Supreme variant (v1)                                            | Builds. **Not run on hardware yet**                                                         |
+| Routing on the node, owner `02`                                        | **Not built yet**                                                                           |
+| Deployment to a real end user                                          | **Never**                                                                                   |
+| Use in an actual emergency                                             | **Never**                                                                                   |
+
+## Following upstream
+
+`main` is the upstream tag `v2.8.0.47db0e3` with the MeshSat commits on top. Upstream releases come in by merge, never by rewriting history, so every MeshSat change stays a readable commit on top of a Meshtastic release. Upstream's contributor guides (`CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`) are theirs and apply here unchanged. Issues with the Meshtastic firmware itself belong upstream.
+
+## Related projects
+
+- **[MeshSat node](https://github.com/meshsat/meshsat-esp32)**, the hardware, wiring, bench tools and the Iridium service contract
+- **[MeshSat Android](https://github.com/meshsat/meshsat-android)**, the phone gateway that speaks to the Iridium service
+- **[MeshSat](https://github.com/meshsat/meshsat)**, the Bridge: a Raspberry Pi gateway that bonds Meshtastic, Iridium, cellular SMS, APRS, ZigBee and TCP
+- **[MeshSat Hub](https://hub.meshsat.net)**, multi-tenant fleet management
+
+## License
+
+[GNU General Public License v3.0](LICENSE), the same as upstream. The Meshtastic firmware is copyright its contributors; the MeshSat additions are copyright 2026 Elli and Kyriakos. Meshtastic® is a registered trademark of Meshtastic LLC.
