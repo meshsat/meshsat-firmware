@@ -28,6 +28,10 @@ static constexpr int32_t IDLE_INTERVAL_MS = 20;
 static constexpr uint16_t CCCD_NOTIFY = 0x0001;
 
 static IridiumPipe *pipeInstance = nullptr;
+// NimBLE drops a notification it has no buffer for, so a chunk is kept until it was accepted.
+static uint8_t pendingChunk[MAX_NOTIFY_BYTES];
+static size_t pendingLength = 0;
+static bool notifyFailed = false;
 static HardwareSerial modemUart(MESHSAT_IRIDIUM_UART_NUM);
 static BLEServer *bleServer = nullptr;
 static BLECharacteristic *txCharacteristic = nullptr;
@@ -52,6 +56,15 @@ class IridiumPipeTxCallbacks : public BLECharacteristicCallbacks
         (void)characteristic;
         if (pipeInstance && desc)
             pipeInstance->onPhoneSubscribe(desc->conn_handle, (subValue & CCCD_NOTIFY) != 0);
+    }
+
+    // Runs synchronously inside notify(), on the calling thread.
+    void onStatus(BLECharacteristic *characteristic, Status status, uint32_t code) override
+    {
+        (void)characteristic;
+        (void)code;
+        if (status == Status::ERROR_GATT)
+            notifyFailed = true;
     }
 };
 
@@ -170,6 +183,7 @@ void IridiumPipe::updateOwner()
         }
     } else if (owner == IridiumModemOwner::Phone) {
         currentOwner.store(IridiumModemOwner::None);
+        pendingLength = 0;
         if (incoming)
             xStreamBufferReset(incoming);
         LOG_INFO("MeshSat Iridium: phone released the modem");
@@ -201,20 +215,24 @@ bool IridiumPipe::pumpModemToPhone()
     if (!txCharacteristic)
         return false;
     bool moved = false;
-    uint8_t chunk[MAX_NOTIFY_BYTES];
     const size_t limit = notifyChunkLimit();
-    for (int i = 0; i < MAX_NOTIFIES_PER_RUN && modemUart.available() > 0; ++i) {
-        size_t count = 0;
-        while (count < limit && modemUart.available() > 0) {
-            const int value = modemUart.read();
-            if (value < 0)
+    for (int i = 0; i < MAX_NOTIFIES_PER_RUN; ++i) {
+        if (pendingLength == 0) {
+            while (pendingLength < limit && modemUart.available() > 0) {
+                const int value = modemUart.read();
+                if (value < 0)
+                    break;
+                pendingChunk[pendingLength++] = static_cast<uint8_t>(value);
+            }
+            if (pendingLength == 0)
                 break;
-            chunk[count++] = static_cast<uint8_t>(value);
         }
-        if (count == 0)
-            break;
-        txCharacteristic->setValue(chunk, count);
+        notifyFailed = false;
+        txCharacteristic->setValue(pendingChunk, pendingLength);
         txCharacteristic->notify();
+        if (notifyFailed)
+            return true;
+        pendingLength = 0;
         moved = true;
     }
     return moved;
