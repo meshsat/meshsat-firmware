@@ -1,4 +1,7 @@
 #include "configuration.h"
+#if MESHSAT_IRIDIUM
+#include "meshsat/IridiumPipe.h"
+#endif
 #if !MESHTASTIC_EXCLUDE_INPUTBROKER
 #include "buzz/BuzzerFeedbackThread.h"
 #include "modules/SystemCommandsModule.h"
@@ -122,6 +125,9 @@
  */
 void setupModules()
 {
+#if MESHSAT_IRIDIUM
+    IridiumPipe::begin();
+#endif
 #if (HAS_BUTTON || ARCH_PORTDUINO) && !MESHTASTIC_EXCLUDE_INPUTBROKER
     if (config.display.displaymode != meshtastic_Config_DisplayConfig_DisplayMode_COLOR) {
         inputBroker = new InputBroker();
