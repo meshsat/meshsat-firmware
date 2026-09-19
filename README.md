@@ -11,6 +11,7 @@
 [![Based on Meshtastic 2.8.0](https://img.shields.io/badge/based%20on-Meshtastic%202.8.0-67EA94)](https://github.com/meshtastic/firmware/releases/tag/v2.8.0.47db0e3)
 ![ESP32-S3 + RockBLOCK 9603](https://img.shields.io/badge/hardware-ESP32--S3%20%2B%20RockBLOCK%209603-555)
 
+[Docs](https://docs.meshsat.net/node/) ·
 [The node](https://github.com/meshsat/meshsat-esp32) ·
 [Iridium Bluetooth service](https://github.com/meshsat/meshsat-esp32/blob/main/docs/IRIDIUM-BLE.md) ·
 [Build and flash](#build-and-flash) ·
