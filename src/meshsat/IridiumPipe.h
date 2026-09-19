@@ -4,6 +4,7 @@
 
 #if MESHSAT_IRIDIUM
 
+#include "Observer.h"
 #include "concurrency/OSThread.h"
 
 #include <atomic>
@@ -52,7 +53,11 @@ class IridiumPipe : private concurrency::OSThread
   private:
     IridiumPipe();
 
+    // Switches the modem supply where the board has one (MESHSAT_IRIDIUM_DCDC5_MV); otherwise a no-op.
+    void powerModem(bool on);
     void openUart();
+    void closeUart();
+    int prepareDeepSleep(void *unused);
     void updateOwner();
     void setOwner(IridiumModemOwner owner);
     void discardPhoneBytes();
@@ -66,6 +71,9 @@ class IridiumPipe : private concurrency::OSThread
     std::atomic<uint16_t> phoneConnHandle{0};
     std::atomic<uint32_t> phoneBytesDropped{0};
     uint32_t unownedBytes = 0;
+
+    CallbackObserver<IridiumPipe, void *> deepSleepObserver =
+        CallbackObserver<IridiumPipe, void *>(this, &IridiumPipe::prepareDeepSleep);
 };
 
 #endif

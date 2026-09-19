@@ -2,6 +2,9 @@
 
 #if MESHSAT_IRIDIUM
 
+#include "Power.h"
+#include "sleep.h"
+
 #include <Arduino.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
@@ -80,6 +83,8 @@ void IridiumPipe::begin()
         return;
     incoming = xStreamBufferCreateStatic(INCOMING_BYTES, 1, incomingStorage, &incomingControl);
     pipeInstance = new IridiumPipe();
+    pipeInstance->deepSleepObserver.observe(&notifyDeepSleep);
+    pipeInstance->powerModem(true);
     pipeInstance->openUart();
 }
 
@@ -122,6 +127,44 @@ void IridiumPipe::openUart()
     gpio_pullup_en(static_cast<gpio_num_t>(MESHSAT_IRIDIUM_RX_PIN));
     LOG_INFO("MeshSat Iridium: RockBLOCK on UART%d, TX GPIO%d, RX GPIO%d, %d 8N1", MESHSAT_IRIDIUM_UART_NUM,
              MESHSAT_IRIDIUM_TX_PIN, MESHSAT_IRIDIUM_RX_PIN, MESHSAT_IRIDIUM_BAUD);
+}
+
+void IridiumPipe::closeUart()
+{
+    modemUart.end();
+    // An idle-high TX pin or a pull-up would feed current into an unpowered modem.
+    pinMode(MESHSAT_IRIDIUM_TX_PIN, INPUT);
+    gpio_pullup_dis(static_cast<gpio_num_t>(MESHSAT_IRIDIUM_RX_PIN));
+}
+
+void IridiumPipe::powerModem(bool on)
+{
+#ifdef MESHSAT_IRIDIUM_DCDC5_MV
+    if (!PMU) {
+        LOG_WARN("MeshSat Iridium: no PMU, modem supply unchanged");
+        return;
+    }
+    if (on) {
+        // DCDC5 follows the battery once it drops below the set voltage; its under-voltage power-off must not shut the node down.
+        if (PMU->getChipModel() == XPOWERS_AXP2101)
+            static_cast<XPowersAXP2101 *>(PMU)->disableDC5LowVoltageTurnOff();
+        PMU->setPowerChannelVoltage(XPOWERS_DCDC5, MESHSAT_IRIDIUM_DCDC5_MV);
+        PMU->enablePowerOutput(XPOWERS_DCDC5);
+    } else {
+        PMU->disablePowerOutput(XPOWERS_DCDC5);
+    }
+    LOG_INFO("MeshSat Iridium: modem supply %s (DCDC5, %d mV)", on ? "on" : "off", MESHSAT_IRIDIUM_DCDC5_MV);
+#else
+    (void)on;
+#endif
+}
+
+int IridiumPipe::prepareDeepSleep(void *unused)
+{
+    (void)unused;
+    closeUart();
+    powerModem(false);
+    return 0;
 }
 
 bool IridiumPipe::tryAcquireForNode()
