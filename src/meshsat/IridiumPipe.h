@@ -28,6 +28,9 @@ class IridiumPipe : private concurrency::OSThread
     static constexpr const char *SERVICE_UUID = "b3d305a2-7310-4877-ad12-8e245e71951a";
     static constexpr const char *RX_UUID = "b9e2d4ba-f386-4728-b77a-7df7121db7a9";
     static constexpr const char *TX_UUID = "469354dc-4c89-41ed-b939-d707c7a11f49";
+    // Two bytes: contract version, then the IridiumModemOwner value; notified on every owner change.
+    static constexpr const char *STATUS_UUID = "69a4064d-78b9-46e5-a30a-1862e553245a";
+    static constexpr uint8_t CONTRACT_VERSION = 1;
 
     static void begin();
     // Called from NimbleBluetooth::setupService(), which re-runs on every BLE re-enable.
@@ -51,6 +54,8 @@ class IridiumPipe : private concurrency::OSThread
 
     void openUart();
     void updateOwner();
+    void setOwner(IridiumModemOwner owner);
+    void discardPhoneBytes();
     bool pumpPhoneToModem();
     bool pumpModemToPhone();
     bool drainUnowned();
