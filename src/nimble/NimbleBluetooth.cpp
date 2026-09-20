@@ -21,6 +21,7 @@
 
 #include "PowerStatus.h"
 #if MESHSAT_IRIDIUM
+#include "meshsat/BleWatchdog.h"
 #include "meshsat/IridiumPipe.h"
 #endif
 
@@ -704,6 +705,10 @@ class NimbleBluetoothSecurityCallback : public BLESecurityCallbacks
 
         LOG_INFO("BLE authentication complete");
 
+#if MESHSAT_IRIDIUM
+        BleWatchdog::noteHealthy();
+#endif
+
         meshtastic::BluetoothStatus newStatus(meshtastic::BluetoothStatus::ConnectionState::CONNECTED);
         bluetoothStatus->updateStatus(&newStatus);
         clearPairingDisplay();
@@ -771,6 +776,9 @@ class NimbleBluetoothServerCallback : public BLEServerCallbacks
 
         LOG_INFO("BLE conn %u peer MTU %u (target %u)", connHandle, pServer->getPeerMTU(connHandle), kPreferredBleMtu);
         pServer->updateConnParams(connHandle, 6, 12, 0, 200);
+#if MESHSAT_IRIDIUM
+        BleWatchdog::noteConnect();
+#endif
     }
 
     void onDisconnect(BLEServer *pServer, struct ble_gap_conn_desc *desc)
