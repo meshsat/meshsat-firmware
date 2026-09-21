@@ -206,6 +206,16 @@ void IridiumPipe::onPhoneSubscribe(uint16_t connHandle, bool subscribed)
     phoneSubscribed.store(subscribed);
 }
 
+void IridiumPipe::onLinkClosed(uint16_t connHandle)
+{
+    // Only the link that claimed the modem releases it. Before this, the claim was dropped only
+    // when no link at all was left, so a phone killed without unsubscribing kept the modem for as
+    // long as any other central stayed connected - and the BLE watchdog, which holds off while the
+    // modem is owned, never fired (MESHSAT-1267, tested 20 Sep 2026).
+    if (phoneSubscribed.load() && phoneConnHandle.load() == connHandle)
+        phoneSubscribed.store(false);
+}
+
 int32_t IridiumPipe::runOnce()
 {
     updateOwner();

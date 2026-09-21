@@ -46,6 +46,8 @@ class IridiumPipe : private concurrency::OSThread
 
     void onPhoneWrite(const uint8_t *data, size_t length);
     void onPhoneSubscribe(uint16_t connHandle, bool subscribed);
+    // A BLE link closed. If it was the one holding the modem, the phone no longer does.
+    void onLinkClosed(uint16_t connHandle);
 
   protected:
     int32_t runOnce() override;
