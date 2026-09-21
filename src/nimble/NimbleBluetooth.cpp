@@ -784,6 +784,10 @@ class NimbleBluetoothServerCallback : public BLEServerCallbacks
     void onDisconnect(BLEServer *pServer, struct ble_gap_conn_desc *desc)
     {
         LOG_INFO("BLE disconnected");
+#if MESHSAT_IRIDIUM
+        if (desc && IridiumPipe::instance())
+            IridiumPipe::instance()->onLinkClosed(desc->conn_handle);
+#endif
         if (ble->isDeInit)
             return;
 
