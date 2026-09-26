@@ -1112,14 +1112,12 @@ int32_t Screen::runOnce()
     // Show boot screen for first logo_timeout seconds, then switch to normal operation.
     // serialSinceMsec adjusts for additional serial wait time during nRF52 bootup
     static bool showingBootScreen = true;
-    if (showingBootScreen && Throttle::hasElapsed(serialSinceMsec, logo_timeout)) {
-        LOG_INFO("Done with boot screen");
-        stopBootScreen();
-        showingBootScreen = false;
-    }
-
 #ifdef USERPREFS_OEM_TEXT
+    // The OEM screen gets its half of the boot time from the moment it is shown. When the loop
+    // was busy through both deadlines (BLE setup on the ESP32-S3), the first pass here used to
+    // set the OEM frames and end the boot screen together, so the OEM screen never appeared.
     static bool showingOEMBootScreen = true;
+    static uint32_t oemSinceMsec = 0;
     if (showingOEMBootScreen && Throttle::hasElapsed(serialSinceMsec, logo_timeout / 2)) {
         LOG_INFO("Switch to OEM screen...");
         // Change frames.
@@ -1131,8 +1129,17 @@ int32_t Screen::runOnce()
         updateUiFrame(ui);
 #endif
         showingOEMBootScreen = false;
+        oemSinceMsec = millis();
     }
+    const bool bootScreenDone = !showingOEMBootScreen && Throttle::hasElapsed(oemSinceMsec, logo_timeout / 2);
+#else
+    const bool bootScreenDone = Throttle::hasElapsed(serialSinceMsec, logo_timeout);
 #endif
+    if (showingBootScreen && bootScreenDone) {
+        LOG_INFO("Done with boot screen");
+        stopBootScreen();
+        showingBootScreen = false;
+    }
 
 #ifndef DISABLE_WELCOME_UNSET
     bool suppressRegionOnboard = false;
