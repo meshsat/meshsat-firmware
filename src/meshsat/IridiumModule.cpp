@@ -72,8 +72,10 @@ bool IridiumModule::isIridiumChannel(uint8_t channelIndex) const
 
 ProcessMessage IridiumModule::handleReceived(const meshtastic_MeshPacket &mp)
 {
-    if (mp.from == nodeDB->getNodeNum())
-        return ProcessMessage::CONTINUE;
+    // Texts from other nodes over LoRa, and texts the node's own phone sends as broadcasts
+    // (Router::sendLocal hands those to the modules too). The satellite messages this module
+    // broadcasts itself arrive as RX_SRC_LOCAL, which callModules keeps away from modules,
+    // so nothing loops back to the modem.
     if (mp.decoded.payload.size == 0 || !isIridiumChannel(mp.channel))
         return ProcessMessage::CONTINUE;
     enqueue(mp);
@@ -217,7 +219,6 @@ void IridiumModule::startWrite()
 void IridiumModule::startSession()
 {
     lastAttemptMs = millis();
-    countSession();
     sendCommand("AT+SBDIX", Command::Sbdix, SESSION_TIMEOUT_MS);
     state = State::Session;
     sessionsAsNode++;
@@ -381,6 +382,9 @@ void IridiumModule::onSessionResult(const char *text)
     const long mt = fields[2];
     mtQueued = fields[5] > 0 ? static_cast<uint32_t>(fields[5]) : 0;
     mtWaiting = false;
+    // Status 32 never reached the gateway and is not billed; everything else counts against the day.
+    if (mo != 32)
+        countSession();
 
     if (moWritten) {
         if (mo >= 0 && mo <= 4) {
@@ -545,6 +549,8 @@ int32_t IridiumModule::runOnce()
         state = State::Idle;
     } else if (state == State::Session && Throttle::hasElapsed(commandSentMs, SESSION_TIMEOUT_MS)) {
         LOG_WARN("MeshSat Iridium: session gave no result in %u s", (unsigned)(SESSION_TIMEOUT_MS / 1000));
+        // It may have reached the gateway before it stalled, so it counts.
+        countSession();
         state = State::Idle;
     } else if (state == State::ReadMt && Throttle::hasElapsed(commandSentMs, READ_TIMEOUT_MS)) {
         LOG_WARN("MeshSat Iridium: SBDRB gave no frame, clearing");

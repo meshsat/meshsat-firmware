@@ -15,7 +15,7 @@
 #define MESHSAT_IRIDIUM_CHANNEL_NAME "i9603"
 #endif
 
-// Unattended sessions per day; a phone's sessions do not count.
+// Unattended sessions per day that reached the gateway (status 32 is free); a phone's sessions do not count.
 #ifndef MESHSAT_IRIDIUM_DAILY_SESSIONS
 #define MESHSAT_IRIDIUM_DAILY_SESSIONS 10
 #endif
