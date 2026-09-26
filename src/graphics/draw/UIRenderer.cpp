@@ -1372,7 +1372,11 @@ void UIRenderer::drawDeviceFocused(OLEDDisplay *display, OLEDDisplayUiState *sta
     config.display.heading_bold = false;
 
 #if HAS_GPS
-    UIRenderer::drawGps(display, x + BASEUI_BODY_LR_MARGIN, getTextPositions(display)[line] + y, gpsStatus, compactPanel);
+#if MESHSAT_IRIDIUM
+    // The MeshSat node runs with its GPS off by default; "GPS off" is noise there. The slot fills again if it is enabled.
+    if (config.position.gps_mode == meshtastic_Config_PositionConfig_GpsMode_ENABLED || config.position.fixed_position)
+#endif
+        UIRenderer::drawGps(display, x + BASEUI_BODY_LR_MARGIN, getTextPositions(display)[line] + y, gpsStatus, compactPanel);
 #endif
 
 #if defined(OLED_TINY)
