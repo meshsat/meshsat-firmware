@@ -11,6 +11,10 @@
 #include "graphics/TFTPalette.h"
 #include "graphics/draw/UIRenderer.h"
 #include "main.h"
+#if MESHSAT_IRIDIUM
+#include "graphics/images.h"
+#include "meshsat/IridiumPipe.h"
+#endif
 #include "meshtastic/config.pb.h"
 #include "modules/ExternalNotificationModule.h"
 #include <OLEDDisplay.h>
@@ -337,6 +341,17 @@ void drawCommonHeader(OLEDDisplay *display, int16_t x, int16_t y, const char *ti
 #endif
         }
     }
+
+#if MESHSAT_IRIDIUM
+    // Satellite glyph after the battery while the modem answers; boxed while a session runs.
+    if (IridiumPipe::instance() && IridiumPipe::instance()->stats().modemAnswered) {
+        const int satX = batteryX + display->getStringWidth("100%") + 4;
+        const int satY = textY + (FONT_HEIGHT_SMALL - imgSatellite_height) / 2;
+        display->drawXbm(satX, satY, imgSatellite_width, imgSatellite_height, imgSatellite);
+        if (IridiumPipe::instance()->sessionInFlight())
+            display->drawRect(satX - 2, satY - 2, imgSatellite_width + 4, imgSatellite_height + 4);
+    }
+#endif
 
     // === Time and Right-aligned Icons ===
     uint32_t rtc_sec = getValidTime(RTCQuality::RTCQualityDevice, true);

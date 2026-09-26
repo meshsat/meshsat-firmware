@@ -1,5 +1,6 @@
 // MeshSat node: XIAO ESP32-S3 + Wio-SX1262 (B2B) + RockBLOCK 9603 (Iridium SBD).
 // Same pins as seeed_xiao_s3, except GPIO43/44 carry the RockBLOCK instead of the L76K GPS.
+#include "meshsat/MeshSatBranding.h"
 
 // Wio-SX1262 green LED, lit when high.
 #define LED_POWER 48
