@@ -16,7 +16,8 @@ class BleWatchdog : private concurrency::OSThread
   public:
     static void begin();
     static void noteConnect();
-    static void noteDisconnect();
+    // wasAuthenticated: the closing link had an encrypted, authenticated session.
+    static void noteDisconnect(bool wasAuthenticated);
     // A passkey is being shown: the link is pairing, not failing.
     static void notePairing();
     static void noteHealthy();
@@ -37,6 +38,7 @@ class BleWatchdog : private concurrency::OSThread
     static std::atomic<uint32_t> lastPairingMs;
     static std::atomic<uint32_t> lastHealthyMs;
     static std::atomic<int32_t> openLinks;
+    static std::atomic<int32_t> authenticatedLinks;
     static std::atomic<bool> pairingSeen;
     static std::atomic<bool> everHealthy;
 };

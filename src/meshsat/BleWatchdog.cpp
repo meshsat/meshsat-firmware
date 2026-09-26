@@ -45,6 +45,7 @@ std::atomic<uint32_t> BleWatchdog::lastFailedConnectMs{0};
 std::atomic<uint32_t> BleWatchdog::lastPairingMs{0};
 std::atomic<uint32_t> BleWatchdog::lastHealthyMs{0};
 std::atomic<int32_t> BleWatchdog::openLinks{0};
+std::atomic<int32_t> BleWatchdog::authenticatedLinks{0};
 std::atomic<bool> BleWatchdog::pairingSeen{false};
 std::atomic<bool> BleWatchdog::everHealthy{false};
 
@@ -82,10 +83,12 @@ void BleWatchdog::noteConnect()
     lastFailedConnectMs = now;
 }
 
-void BleWatchdog::noteDisconnect()
+void BleWatchdog::noteDisconnect(bool wasAuthenticated)
 {
     if (openLinks.load() > 0)
         openLinks--;
+    if (wasAuthenticated && authenticatedLinks.load() > 0)
+        authenticatedLinks--;
 }
 
 void BleWatchdog::notePairing()
@@ -99,6 +102,7 @@ void BleWatchdog::noteHealthy()
     unauthenticatedConnects = 0;
     lastHealthyMs = millis();
     everHealthy = true;
+    authenticatedLinks++;
 }
 
 bool BleWatchdog::modemBusy() const
@@ -119,8 +123,9 @@ void BleWatchdog::persistReboot(const char *why)
 
 void BleWatchdog::reboot(const char *why)
 {
-    LOG_ERROR("BLE watchdog: %s, rebooting (links open %d, unauthenticated %u, ever authenticated %s)", why,
-              (int)openLinks.load(), (unsigned)unauthenticatedConnects.load(), everHealthy.load() ? "yes" : "no");
+    LOG_ERROR("BLE watchdog: %s, rebooting (links open %d, authenticated %d, unauthenticated %u, ever authenticated %s)", why,
+              (int)openLinks.load(), (int)authenticatedLinks.load(), (unsigned)unauthenticatedConnects.load(),
+              everHealthy.load() ? "yes" : "no");
     persistReboot(why);
     rebootAtMsec = millis() + REBOOT_DELAY_MS;
 }
@@ -140,7 +145,8 @@ int32_t BleWatchdog::runOnce()
 
     const bool pairingInProgress = pairingSeen.load() && !Throttle::hasElapsed(lastPairingMs.load(), PAIRING_GRACE_MS);
 
-    if (failed >= MESHSAT_BLE_WATCHDOG_FAILED_CONNECTS && !pairingInProgress) {
+    // A stack that serves an authenticated link right now is not wedged, whatever else knocks.
+    if (failed >= MESHSAT_BLE_WATCHDOG_FAILED_CONNECTS && !pairingInProgress && authenticatedLinks.load() == 0) {
         const bool silent = healthyOnce
                                 ? Throttle::hasElapsed(lastHealthy, MESHSAT_BLE_WATCHDOG_SILENCE_MS)
                                 : Throttle::hasElapsed(firstFailedConnectMs.load(), MESHSAT_BLE_WATCHDOG_FIRST_SILENCE_MS);
