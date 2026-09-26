@@ -659,6 +659,9 @@ class NimbleBluetoothSecurityCallback : public BLESecurityCallbacks
     void onPassKeyNotify(uint32_t passkey) override
     {
         LOG_INFO("*** Enter passkey %06u on the peer side ***", passkey);
+#if MESHSAT_IRIDIUM
+        BleWatchdog::notePairing();
+#endif
         powerFSM.trigger(EVENT_BLUETOOTH_PAIR);
         meshtastic::BluetoothStatus newStatus(std::to_string(passkey));
         bluetoothStatus->updateStatus(&newStatus);
@@ -785,6 +788,7 @@ class NimbleBluetoothServerCallback : public BLEServerCallbacks
     {
         LOG_INFO("BLE disconnected");
 #if MESHSAT_IRIDIUM
+        BleWatchdog::noteDisconnect();
         if (desc && IridiumPipe::instance())
             IridiumPipe::instance()->onLinkClosed(desc->conn_handle);
 #endif
@@ -955,7 +959,14 @@ void NimbleBluetooth::setup()
         // Set the passkey
         if (config.bluetooth.mode == meshtastic_Config_BluetoothConfig_PairingMode_RANDOM_PIN) {
             LOG_INFO("Use random passkey");
+#if MESHSAT_IRIDIUM
+            // The passkey is otherwise shown only once a peer reaches the display step; a pairing
+            // that fails before that leaves no trace of it (MESHSAT-1313).
+            const uint32_t randomPasskey = security.setPassKey(false);
+            LOG_INFO("Random passkey %06u (shown again at each pairing)", (unsigned)randomPasskey);
+#else
             security.setPassKey(false); // generate a random passkey
+#endif
         } else {
             LOG_INFO("Use fixed passkey");
             security.setPassKey(true, config.bluetooth.fixed_pin);
