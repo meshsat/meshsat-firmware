@@ -52,7 +52,7 @@ class IridiumModule : public SinglePortModule, private concurrency::OSThread
         ReadMt,
     };
 
-    enum class Command : uint8_t { None, InitStep, Sbdsx, ClearMo, ClearMt, Sbdix };
+    enum class Command : uint8_t { None, InitStep, Sbdsx, Csq, ClearMo, ClearMt, Sbdix };
 
     struct Outbound {
         uint8_t bytes[340];

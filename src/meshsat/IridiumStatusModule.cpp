@@ -13,12 +13,25 @@
 #include "graphics/images.h"
 #endif
 
+#if defined(HAS_PMU)
+#include "Power.h"
+#endif
+
 #include <cstdio>
 
-static constexpr uint32_t POLL_INTERVAL_MS = 500;
+static constexpr int32_t POLL_INTERVAL_MS = 500;
+static constexpr int32_t POLL_LED_MS = 50;
 static constexpr uint32_t BANNER_MS = 4 * 1000UL;
-// A CSQ older than this is shown as unknown.
+// A CSQ older than this is shown as unknown on the frame and does not gate the fail blink.
 static constexpr uint32_t CSQ_FRESH_MS = 30 * 60 * 1000UL;
+static constexpr uint32_t CSQ_GATE_MS = 60 * 1000UL;
+static constexpr uint32_t HEARTBEAT_EVERY_MS = 10 * 1000UL;
+static constexpr uint32_t WAITING_EVERY_MS = 5 * 1000UL;
+
+static const IridiumStatusModule::BlinkStep SENT_SCRIPT[] = {{100, 120}, {100, 120}, {100, 0}};
+static const IridiumStatusModule::BlinkStep FAIL_SCRIPT[] = {{1000, 0}};
+static const IridiumStatusModule::BlinkStep WAITING_SCRIPT[] = {{80, 120}, {80, 0}};
+static const IridiumStatusModule::BlinkStep HEARTBEAT_SCRIPT[] = {{60, 0}};
 
 IridiumStatusModule::IridiumStatusModule() : MeshModule("IridiumStatus"), concurrency::OSThread("IridiumStatus") {}
 
@@ -59,21 +72,32 @@ void IridiumStatusModule::formatAge(char *out, size_t size, uint32_t sinceMs)
         snprintf(out, size, "%uh", (unsigned)(s / 3600));
 }
 
-int32_t IridiumStatusModule::runOnce()
+// ---- events: banners and one-shot blinks ----
+
+void IridiumStatusModule::noteEvents()
 {
     IridiumPipe *pipe = IridiumPipe::instance();
     if (!pipe)
-        return POLL_INTERVAL_MS;
+        return;
     const IridiumStats &st = pipe->stats();
 
     if (st.lastSessionMs != seenSessionMs && st.lastSessionMs != 0) {
         seenSessionMs = st.lastSessionMs;
+        const bool sent = st.lastMoStatus >= 0 && st.lastMoStatus <= 4;
+        if (sent) {
+            pendingSentBlink = true;
+        } else {
+            // A failure with bars is worth a blink; at 0 bars it is just a wall in the way.
+            const bool bars = st.lastCsq >= 1 && !Throttle::hasElapsed(st.lastCsqMs, CSQ_GATE_MS);
+            if (bars)
+                pendingFailBlink = true;
+        }
 #if HAS_SCREEN
         if (screen) {
             char text[48];
-            if (st.lastMoStatus >= 0 && st.lastMoStatus <= 4 && st.lastMtLength > 0)
+            if (sent && st.lastMtLength > 0)
                 snprintf(text, sizeof(text), "Satellite: sent, %u B in", (unsigned)st.lastMtLength);
-            else if (st.lastMoStatus >= 0 && st.lastMoStatus <= 4)
+            else if (sent)
                 snprintf(text, sizeof(text), "Satellite: sent");
             else if (st.lastMoStatus < 0)
                 snprintf(text, sizeof(text), "Satellite: session error");
@@ -99,9 +123,142 @@ int32_t IridiumStatusModule::runOnce()
             screen->showSimpleBanner("Satellite: modem silent", BANNER_MS);
 #endif
     }
+}
 
+// ---- the LED ----
+
+void IridiumStatusModule::setLed(Led mode)
+{
+    if (ledKnown && mode == led)
+        return;
+    led = mode;
+    ledKnown = true;
+#if defined(HAS_PMU)
+    if (!PMU)
+        return;
+    switch (mode) {
+    case Led::Off:
+        PMU->setChargingLedMode(XPOWERS_CHG_LED_OFF);
+        break;
+    case Led::On:
+        PMU->setChargingLedMode(XPOWERS_CHG_LED_ON);
+        break;
+    case Led::Blink1Hz:
+        PMU->setChargingLedMode(XPOWERS_CHG_LED_BLINK_1HZ);
+        break;
+    case Led::Blink4Hz:
+        PMU->setChargingLedMode(XPOWERS_CHG_LED_BLINK_4HZ);
+        break;
+    }
+#endif
+}
+
+void IridiumStatusModule::startScript(const BlinkStep *steps, uint8_t count)
+{
+    script = steps;
+    scriptCount = count;
+    scriptStep = 0;
+    scriptOn = true;
+    scriptStepMs = millis();
+    setLed(Led::On);
+}
+
+// Advances the running blink script; true while it still runs.
+bool IridiumStatusModule::runScript(uint32_t now)
+{
+    if (!script)
+        return false;
+    const BlinkStep &step = script[scriptStep];
+    const uint32_t phaseMs = scriptOn ? step.onMs : step.offMs;
+    if (!Throttle::hasElapsed(scriptStepMs, phaseMs))
+        return true;
+    if (scriptOn) {
+        scriptOn = false;
+        scriptStepMs = now;
+        setLed(Led::Off);
+        if (step.offMs > 0)
+            return true;
+    }
+    scriptStep++;
+    if (scriptStep >= scriptCount) {
+        script = nullptr;
+        return false;
+    }
+    scriptOn = true;
+    scriptStepMs = now;
+    setLed(Led::On);
+    return true;
+}
+
+int32_t IridiumStatusModule::driveLed()
+{
+    IridiumPipe *pipe = IridiumPipe::instance();
+    if (!pipe)
+        return POLL_INTERVAL_MS;
+    const IridiumStats &st = pipe->stats();
+    const uint32_t now = millis();
+
+    // With a phone on the modem the app shows the diagnostics; the LED keeps quiet.
+    if (pipe->owner() == IridiumModemOwner::Phone) {
+        script = nullptr;
+        pendingSentBlink = false;
+        pendingFailBlink = false;
+        setLed(Led::Off);
+        return POLL_INTERVAL_MS;
+    }
+
+    if (!st.modemAnswered && !MESHSAT_LED_DARK) {
+        script = nullptr;
+        setLed(Led::Blink1Hz);
+        return POLL_INTERVAL_MS;
+    }
+    if (st.sessionInFlight && !MESHSAT_LED_DARK) {
+        script = nullptr;
+        setLed(Led::Blink4Hz);
+        return POLL_INTERVAL_MS;
+    }
+
+    if (runScript(now))
+        return POLL_LED_MS;
+
+    if (pendingSentBlink) {
+        pendingSentBlink = false;
+        startScript(SENT_SCRIPT, sizeof(SENT_SCRIPT) / sizeof(SENT_SCRIPT[0]));
+        return POLL_LED_MS;
+    }
+    if (pendingFailBlink && !MESHSAT_LED_DARK) {
+        pendingFailBlink = false;
+        startScript(FAIL_SCRIPT, sizeof(FAIL_SCRIPT) / sizeof(FAIL_SCRIPT[0]));
+        return POLL_LED_MS;
+    }
+    pendingFailBlink = false;
+
+    if (st.ringPending) {
+        if (Throttle::hasElapsed(lastWaitingBlinkMs, WAITING_EVERY_MS)) {
+            lastWaitingBlinkMs = now;
+            startScript(WAITING_SCRIPT, sizeof(WAITING_SCRIPT) / sizeof(WAITING_SCRIPT[0]));
+            return POLL_LED_MS;
+        }
+        setLed(Led::Off);
+        return POLL_INTERVAL_MS;
+    }
+
+    if (!MESHSAT_LED_DARK && Throttle::hasElapsed(lastHeartbeatMs, HEARTBEAT_EVERY_MS)) {
+        lastHeartbeatMs = now;
+        startScript(HEARTBEAT_SCRIPT, sizeof(HEARTBEAT_SCRIPT) / sizeof(HEARTBEAT_SCRIPT[0]));
+        return POLL_LED_MS;
+    }
+    setLed(Led::Off);
     return POLL_INTERVAL_MS;
 }
+
+int32_t IridiumStatusModule::runOnce()
+{
+    noteEvents();
+    return driveLed();
+}
+
+// ---- the frame ----
 
 #if HAS_SCREEN
 void IridiumStatusModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)

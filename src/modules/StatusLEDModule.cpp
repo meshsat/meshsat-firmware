@@ -203,7 +203,8 @@ int32_t StatusLEDModule::runOnce()
     }
 #endif
 
-#if defined(HAS_PMU)
+#if defined(HAS_PMU) && !MESHSAT_IRIDIUM
+    // On the MeshSat node the PMU LED belongs to IridiumStatusModule (satellite state).
     if (pmu_found && PMU) {
         // blink the axp led
         PMU->setChargingLedMode(CHARGE_LED_state ? XPOWERS_CHG_LED_ON : XPOWERS_CHG_LED_OFF);
@@ -288,7 +289,7 @@ int32_t StatusLEDModule::runOnce()
 void StatusLEDModule::setPowerLED(bool LEDon)
 {
 
-#if defined(HAS_PMU)
+#if defined(HAS_PMU) && !MESHSAT_IRIDIUM
     if (pmu_found && PMU) {
         // blink the axp led
         PMU->setChargingLedMode(LEDon ? XPOWERS_CHG_LED_ON : XPOWERS_CHG_LED_OFF);
