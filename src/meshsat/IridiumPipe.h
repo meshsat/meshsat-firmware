@@ -77,6 +77,13 @@ class IridiumPipe : private concurrency::OSThread
     // The node's logic may only take an unowned modem, and must release it outside an SBDIX.
     bool tryAcquireForNode();
     void releaseFromNode();
+    // True while a phone is subscribed to TX: the node's logic must hand the modem over.
+    bool phoneWantsModem() const { return phoneSubscribed.load(); }
+    // Serial access for the node's own logic; both are no-ops unless the node owns the modem.
+    // What goes by feeds the same readers as the phone's traffic (sessions, CSQ, ring).
+    size_t nodeWrite(const uint8_t *data, size_t length);
+    int nodeAvailable();
+    int nodeRead();
 
     void onPhoneWrite(const uint8_t *data, size_t length);
     void onPhoneSubscribe(uint16_t connHandle, bool subscribed);
