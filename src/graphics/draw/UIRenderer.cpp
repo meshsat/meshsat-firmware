@@ -23,6 +23,9 @@
 #include "graphics/images.h"
 #include "main.h"
 #include "target_specific.h"
+#if MESHSAT_IRIDIUM
+#include "meshsat/MeshSatBootScreen.h"
+#endif
 #ifdef COMPASS_SENSOR_DEBUG
 #include "motion/MotionSensor.h"
 #endif
@@ -482,7 +485,8 @@ static void drawTruncatedStatusLine(OLEDDisplay *display, int16_t x, int16_t y, 
     display->drawString(x, y, clippedStatus);
 }
 
-static int computeChannelUtilizationFill(int percent, int maxFill)
+// Only the channel-utilisation bar uses this; the MeshSat node shows its satellite line there instead.
+[[maybe_unused]] static int computeChannelUtilizationFill(int percent, int maxFill)
 {
     // Compact linear fill mapping for the utilization bar.
     if (percent <= 0 || maxFill <= 0) {
@@ -1415,6 +1419,10 @@ void UIRenderer::drawDeviceFocused(OLEDDisplay *display, OLEDDisplayUiState *sta
 
     config.display.heading_bold = origBold;
 
+#if MESHSAT_IRIDIUM
+    // === Third Row: the satellite line takes the place of the channel-utilisation bar ===
+    meshsat::drawHomeSatelliteRow(display, x, getTextPositions(display)[line] + y);
+#else
     // === Third Row: Channel Utilization Bluetooth Off (Only If Actually Off) ===
     const char *chUtil = "ChUtil:";
     char chUtilPercentage[10];
@@ -1483,6 +1491,7 @@ void UIRenderer::drawDeviceFocused(OLEDDisplay *display, OLEDDisplayUiState *sta
                                 display->getStringWidth(chUtilPercentage) + extraoffset,
                             getTextPositions(display)[line] + y, "BT off");
     }
+#endif
 
     line += 1;
 
