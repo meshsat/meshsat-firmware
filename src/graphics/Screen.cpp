@@ -50,6 +50,9 @@ extern NicheGraphics::BaseUIEInkDisplay *setupNicheGraphicsBaseUI();
 #include "draw/NotificationRenderer.h"
 #include "draw/UIRenderer.h"
 #include "graphics/TFTColorRegions.h"
+#if MESHSAT_IRIDIUM
+#include "meshsat/MeshSatBootScreen.h"
+#endif
 #include "modules/CannedMessageModule.h"
 #if HAS_TELEMETRY && HAS_SENSOR && !MESHTASTIC_EXCLUDE_ENVIRONMENTAL_SENSOR
 #include "modules/Telemetry/EnvironmentTelemetry.h"
@@ -1121,7 +1124,11 @@ int32_t Screen::runOnce()
     if (showingOEMBootScreen && Throttle::hasElapsed(serialSinceMsec, logo_timeout / 2)) {
         LOG_INFO("Switch to OEM screen...");
         // Change frames.
+#if MESHSAT_IRIDIUM
+        static FrameCallback bootOEMFrames[] = {meshsat::drawBootScreen};
+#else
         static FrameCallback bootOEMFrames[] = {graphics::UIRenderer::drawOEMBootScreen};
+#endif
         static const int bootOEMFrameCount = sizeof(bootOEMFrames) / sizeof(bootOEMFrames[0]);
         ui->setFrames(bootOEMFrames, bootOEMFrameCount);
         updateUiFrame(ui);
