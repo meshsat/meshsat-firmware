@@ -28,6 +28,8 @@ static constexpr uint32_t READ_TIMEOUT_MS = 10 * 1000UL;
 static constexpr uint32_t ATTEMPT_GAP_MS = 10 * 1000UL;
 static constexpr uint32_t HOLD_AFTER_32_36_MS = 3 * 60 * 1000UL;
 static constexpr uint32_t SBDSX_INTERVAL_MS = 10 * 60 * 1000UL;
+static constexpr uint32_t CSQ_INTERVAL_MS = 60 * 1000UL;
+static constexpr uint32_t CSQ_TIMEOUT_MS = 10 * 1000UL;
 // The modem answers about 10 s after power; the first command is retried this many times.
 static constexpr uint8_t INIT_RETRIES = 20;
 static constexpr uint32_t QUEUE_MAX_AGE_MS = 30 * 60 * 1000UL;
@@ -583,6 +585,12 @@ int32_t IridiumModule::runOnce()
     if (Throttle::hasElapsed(lastSbdsxMs, SBDSX_INTERVAL_MS) || lastSbdsxMs == 0) {
         lastSbdsxMs = millis();
         sendCommand("AT+SBDSX", Command::Sbdsx, COMMAND_TIMEOUT_MS);
+        return POLL_BUSY_MS;
+    }
+    // The modem's last known signal quality, free and immediate, for the screen and the LED.
+    // Never a send gate. The pipe's reader files the +CSQF reply into the stats.
+    if (st.lastCsqMs == 0 || Throttle::hasElapsed(st.lastCsqMs, CSQ_INTERVAL_MS)) {
+        sendCommand("AT+CSQF", Command::Csq, CSQ_TIMEOUT_MS);
         return POLL_BUSY_MS;
     }
     return POLL_IDLE_MS;

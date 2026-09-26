@@ -570,7 +570,6 @@ void IridiumPipe::onCommandLine()
         stat.sessions++;
         stat.sessionInFlight = true;
         stat.sessionStartMs = now;
-        stat.ringPending = false;
         sessionInFlightFlag.store(true);
         LOG_INFO("MeshSat Iridium: session %u started (%s)", static_cast<unsigned>(stat.sessions),
                  currentOwner.load() == IridiumModemOwner::Phone ? "phone" : "node");
@@ -602,6 +601,13 @@ void IridiumPipe::onResponseLine()
         stat.lastMtQueued = static_cast<uint32_t>(fields[5]);
         stat.lastSessionMs = now;
         stat.sessionInFlight = false;
+        // A session that reached the gateway settles whether a message is still waiting; 32 never did.
+        if (stat.lastMoStatus != 32) {
+            const bool stillWaiting = stat.lastMtQueued > 0;
+            if (stillWaiting && !stat.ringPending)
+                stat.ringMs = now;
+            stat.ringPending = stillWaiting;
+        }
         sessionInFlightFlag.store(false);
         stat.modemAnswered = true;
         stat.lastModemOkMs = now;
@@ -611,8 +617,10 @@ void IridiumPipe::onResponseLine()
         return;
     }
 
-    if (strncmp(responseLine, "+CSQ:", 5) == 0) {
-        stat.lastCsq = static_cast<int>(strtol(responseLine + 5, nullptr, 10));
+    // +CSQ: (a fresh scan) and +CSQF: (the last known value) both carry 0-5.
+    if (strncmp(responseLine, "+CSQ", 4) == 0) {
+        const char *colon = strchr(responseLine, ':');
+        stat.lastCsq = colon ? static_cast<int>(strtol(colon + 1, nullptr, 10)) : -1;
         stat.lastCsqMs = now;
         stat.modemAnswered = true;
         stat.lastModemOkMs = now;
@@ -623,6 +631,29 @@ void IridiumPipe::onResponseLine()
         stat.ringPending = true;
         stat.ringMs = now;
         LOG_INFO("MeshSat Iridium: ring alert, a message is waiting");
+        return;
+    }
+
+    // +SBDSX: <MO flag>, <MOMSN>, <MT flag>, <MTMSN>, <RA flag>, <msg waiting>: the free way to learn
+    // that the gateway holds a message.
+    if (strncmp(responseLine, "+SBDSX:", 7) == 0) {
+        long fields[6] = {0, 0, 0, 0, 0, 0};
+        const char *cursor = responseLine + 7;
+        for (int i = 0; i < 6; ++i) {
+            char *end = nullptr;
+            fields[i] = strtol(cursor, &end, 10);
+            if (end == cursor)
+                break;
+            cursor = end;
+            while (*cursor == ',' || *cursor == ' ')
+                ++cursor;
+        }
+        if ((fields[2] == 1 || fields[4] == 1 || fields[5] > 0) && !stat.ringPending) {
+            stat.ringPending = true;
+            stat.ringMs = now;
+        }
+        stat.modemAnswered = true;
+        stat.lastModemOkMs = now;
         return;
     }
 
