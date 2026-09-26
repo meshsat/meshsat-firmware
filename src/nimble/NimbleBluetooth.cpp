@@ -788,7 +788,7 @@ class NimbleBluetoothServerCallback : public BLEServerCallbacks
     {
         LOG_INFO("BLE disconnected");
 #if MESHSAT_IRIDIUM
-        BleWatchdog::noteDisconnect();
+        BleWatchdog::noteDisconnect(desc && desc->sec_state.encrypted && desc->sec_state.authenticated);
         if (desc && IridiumPipe::instance())
             IridiumPipe::instance()->onLinkClosed(desc->conn_handle);
 #endif
