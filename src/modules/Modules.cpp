@@ -1,6 +1,7 @@
 #include "configuration.h"
 #if MESHSAT_IRIDIUM
 #include "meshsat/BleWatchdog.h"
+#include "meshsat/IridiumModule.h"
 #include "meshsat/IridiumPipe.h"
 #include "meshsat/IridiumStatusModule.h"
 #endif
@@ -131,6 +132,7 @@ void setupModules()
     IridiumPipe::begin();
     BleWatchdog::begin();
     new IridiumStatusModule();
+    new IridiumModule();
 #endif
 #if (HAS_BUTTON || ARCH_PORTDUINO) && !MESHTASTIC_EXCLUDE_INPUTBROKER
     if (config.display.displaymode != meshtastic_Config_DisplayConfig_DisplayMode_COLOR) {

@@ -195,6 +195,8 @@ bool IridiumPipe::tryAcquireForNode()
     IridiumModemOwner expected = IridiumModemOwner::None;
     if (!currentOwner.compare_exchange_strong(expected, IridiumModemOwner::Node))
         return false;
+    // A health probe still out would be counted as a miss on release; the node's own traffic answers it.
+    healthAwaiting = false;
     publishStatus();
     return true;
 }
@@ -204,6 +206,31 @@ void IridiumPipe::releaseFromNode()
     IridiumModemOwner expected = IridiumModemOwner::Node;
     if (currentOwner.compare_exchange_strong(expected, IridiumModemOwner::None))
         publishStatus();
+}
+
+size_t IridiumPipe::nodeWrite(const uint8_t *data, size_t length)
+{
+    if (currentOwner.load() != IridiumModemOwner::Node || !data || length == 0)
+        return 0;
+    notePhoneBytes(data, length);
+    return modemUart.write(data, length);
+}
+
+int IridiumPipe::nodeAvailable()
+{
+    if (currentOwner.load() != IridiumModemOwner::Node)
+        return 0;
+    return modemUart.available();
+}
+
+int IridiumPipe::nodeRead()
+{
+    if (currentOwner.load() != IridiumModemOwner::Node)
+        return -1;
+    const int value = modemUart.read();
+    if (value >= 0)
+        noteModemByte(static_cast<uint8_t>(value));
+    return value;
 }
 
 void IridiumPipe::setOwner(IridiumModemOwner owner)
