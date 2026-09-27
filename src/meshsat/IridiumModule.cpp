@@ -33,6 +33,8 @@ static constexpr uint32_t CSQ_TIMEOUT_MS = 10 * 1000UL;
 // The modem answers about 10 s after power; the first command is retried this many times.
 static constexpr uint8_t INIT_RETRIES = 20;
 static constexpr uint32_t QUEUE_MAX_AGE_MS = 30 * 60 * 1000UL;
+// After boot and after a phone gives the modem back, the node leaves it free this long.
+static constexpr uint32_t PHONE_GRACE_MS = 60 * 1000UL;
 static constexpr size_t MO_MAX_BYTES = 340;
 static constexpr size_t MT_MAX_BYTES = 270;
 
@@ -159,6 +161,11 @@ void IridiumModule::takeOrReleaseModem()
         return;
     if (state == State::Off) {
         if (pipe->phoneWantsModem() || pipe->owner() != IridiumModemOwner::None)
+            return;
+        // A phone that just dropped, or one about to connect after a boot, is first in line: the
+        // node waits before it takes the modem, so no session goes out on a Bluetooth hiccup.
+        const uint32_t lastRelease = pipe->stats().lastPhoneReleaseMs;
+        if (!Throttle::hasElapsed(0, PHONE_GRACE_MS) || (lastRelease != 0 && !Throttle::hasElapsed(lastRelease, PHONE_GRACE_MS)))
             return;
         if (!pipe->tryAcquireForNode())
             return;

@@ -49,6 +49,8 @@ struct IridiumStats {
     uint32_t phoneBytesDropped = 0;
     // CCCD writes from a link that was not the owner, since boot.
     uint32_t foreignSubscribes = 0;
+    // When a phone last gave the modem back (0 = never); the node's own routing waits after it.
+    uint32_t lastPhoneReleaseMs = 0;
 };
 
 // Binary-safe BLE <-> UART pipe to the RockBLOCK 9603, served next to the Meshtastic service.
