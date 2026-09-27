@@ -28,6 +28,8 @@ static constexpr uint32_t CSQ_FRESH_MS = 30 * 60 * 1000UL;
 static constexpr uint32_t CSQ_GATE_MS = 60 * 1000UL;
 static constexpr uint32_t HEARTBEAT_EVERY_MS = 10 * 1000UL;
 static constexpr uint32_t WAITING_EVERY_MS = 5 * 1000UL;
+// No banners or animations this long after boot: the boot screen owns the display.
+static constexpr uint32_t BOOT_QUIET_MS = 30 * 1000UL;
 
 static const IridiumStatusModule::BlinkStep SENT_SCRIPT[] = {{100, 120}, {100, 120}, {100, 0}};
 static const IridiumStatusModule::BlinkStep FAIL_SCRIPT[] = {{1000, 0}};
@@ -82,6 +84,11 @@ void IridiumStatusModule::noteEvents()
         return;
     const IridiumStats &st = pipe->stats();
 
+    // The node takes the modem while the boot screen is still up; its first status read and
+    // session would pop a banner over the MeshSat logo. During the quiet window the events are
+    // noted for the LED and the frame, nothing is shown.
+    const bool quiet = !Throttle::hasElapsed(0, BOOT_QUIET_MS);
+
     if (st.lastSessionMs != seenSessionMs && st.lastSessionMs != 0) {
         seenSessionMs = st.lastSessionMs;
         const bool sent = st.lastMoStatus >= 0 && st.lastMoStatus <= 4;
@@ -94,7 +101,7 @@ void IridiumStatusModule::noteEvents()
                 pendingFailBlink = true;
         }
 #if HAS_SCREEN
-        if (screen) {
+        if (screen && !quiet) {
             const bool received = st.lastMtStatus == 1 && st.lastMtLength > 0;
             if (received || sent) {
                 // A message came in or went out: the envelope animation, ended from runOnce.
@@ -116,7 +123,7 @@ void IridiumStatusModule::noteEvents()
     if (st.ringPending && st.ringMs != seenRingMs) {
         seenRingMs = st.ringMs;
 #if HAS_SCREEN
-        if (screen)
+        if (screen && !quiet)
             screen->showSimpleBanner("Satellite: message waiting", BANNER_MS);
 #endif
     }
@@ -124,7 +131,7 @@ void IridiumStatusModule::noteEvents()
     if (st.modemAnswered != seenModemAnswered) {
         seenModemAnswered = st.modemAnswered;
 #if HAS_SCREEN
-        if (screen && !st.modemAnswered)
+        if (screen && !quiet && !st.modemAnswered)
             screen->showSimpleBanner("Satellite: modem silent", BANNER_MS);
 #endif
     }
