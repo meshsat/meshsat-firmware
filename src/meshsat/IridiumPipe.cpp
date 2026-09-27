@@ -148,7 +148,7 @@ void IridiumPipe::setupBleService(BLEServer *server, bool requireEncryption)
     txCharacteristic->setCallbacks(&txCallbacks);
     statusCharacteristic = service->createCharacteristic(STATUS_UUID, txProperties);
     const uint8_t owner = pipeInstance ? static_cast<uint8_t>(pipeInstance->owner()) : 0;
-    const uint8_t status[2] = {CONTRACT_VERSION, owner};
+    const uint8_t status[STATUS_BYTES] = {CONTRACT_VERSION, owner, 0, 0xFF};
     statusCharacteristic->setValue(status, sizeof(status));
     // Contract v2, additive: STATS (read + notify) and PASS (write).
     statsCharacteristic = service->createCharacteristic(STATS_UUID, txProperties);
@@ -262,13 +262,19 @@ void IridiumPipe::setOwner(IridiumModemOwner owner)
     publishStatus();
 }
 
+// STATUS, contract v2: [version][owner][flags][csq]. Notified when the owner or the flags change;
+// a new signal reading updates the value without a notification (STATS carries it).
 void IridiumPipe::publishStatus()
 {
     if (!statusCharacteristic)
         return;
-    const uint8_t status[2] = {CONTRACT_VERSION, static_cast<uint8_t>(currentOwner.load())};
+    const uint8_t status[STATUS_BYTES] = {CONTRACT_VERSION, static_cast<uint8_t>(currentOwner.load()), statusFlags(),
+                                          stat.lastCsq >= 0 ? static_cast<uint8_t>(stat.lastCsq > 5 ? 5 : stat.lastCsq) : 0xFF};
+    const bool notify = status[1] != lastStatus[1] || status[2] != lastStatus[2];
     statusCharacteristic->setValue(status, sizeof(status));
-    statusCharacteristic->notify();
+    if (notify)
+        statusCharacteristic->notify();
+    memcpy(lastStatus, status, sizeof(status));
 }
 
 uint8_t IridiumPipe::statusFlags() const
@@ -428,6 +434,8 @@ int32_t IridiumPipe::runOnce()
     updateOwner();
     reportDrops();
     applyPendingPassList();
+    if (statusFlags() != lastStatus[2])
+        publishStatus();
     publishStats();
 
     // Bytes a phone writes without owning the modem are dropped, so nothing stale runs later.

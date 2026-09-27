@@ -61,9 +61,11 @@ class IridiumPipe : private concurrency::OSThread
     static constexpr const char *SERVICE_UUID = "b3d305a2-7310-4877-ad12-8e245e71951a";
     static constexpr const char *RX_UUID = "b9e2d4ba-f386-4728-b77a-7df7121db7a9";
     static constexpr const char *TX_UUID = "469354dc-4c89-41ed-b939-d707c7a11f49";
-    // Two bytes: contract version, then the IridiumModemOwner value; notified on every owner change.
+    // Contract v2: version, owner, flags, signal; notified when the owner or the flags change.
+    // A v1 client reads the first two bytes and sees the same owner byte as before.
     static constexpr const char *STATUS_UUID = "69a4064d-78b9-46e5-a30a-1862e553245a";
-    static constexpr uint8_t CONTRACT_VERSION = 1;
+    static constexpr uint8_t CONTRACT_VERSION = 2;
+    static constexpr size_t STATUS_BYTES = 4;
     // Contract v2 (MESHSAT-1378), additive: node health for the apps, and pass windows from the phone.
     static constexpr const char *STATS_UUID = "9c22cf07-2256-4fc2-b6ee-ab0ceb12198d";
     static constexpr const char *PASS_UUID = "5c1000e8-f411-4f3d-a4c9-5ee0610a8e66";
@@ -153,6 +155,7 @@ class IridiumPipe : private concurrency::OSThread
     // STATS: last published image, to notify only on change and at most every 2 s.
     uint8_t lastStats[STATS_BYTES] = {0};
     uint32_t lastStatsMs = 0;
+    uint8_t lastStatus[STATUS_BYTES] = {0};
 
     // PASS: the BLE thread fills the pending copy, runOnce moves it into the live list.
     PassWindow passWindows[MAX_PASS_WINDOWS];
