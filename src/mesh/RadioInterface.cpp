@@ -1395,6 +1395,11 @@ void RadioInterface::applyModemConfig()
         preambleLength =
             preambleLengthDefault; // 8 is default, but we use longer to increase the amount of sleep time when receiving
     }
+#ifdef MESHSAT_PINEDIO_BRIDGE
+    // A crystal that drifts while it warms up needs its time before the data begins.
+    if (meshsat_pinedio::selected() && meshsat_pinedio::settings.preamble >= 8 && meshsat_pinedio::settings.preamble <= 65535)
+        preambleLength = (uint16_t)meshsat_pinedio::settings.preamble;
+#endif
 
     slotTimeMsec = computeSlotTimeMsec();
     preambleTimeMsec = preambleLength * (pow_of_2(sf) / bw);
