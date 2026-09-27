@@ -21,6 +21,8 @@ class BleWatchdog : private concurrency::OSThread
     // A passkey is being shown: the link is pairing, not failing.
     static void notePairing();
     static void noteHealthy();
+    // Watchdog reboots so far, from NVS at boot plus this session's.
+    static uint32_t rebootCount() { return reboots.load(); }
 
   protected:
     int32_t runOnce() override;
@@ -41,6 +43,7 @@ class BleWatchdog : private concurrency::OSThread
     static std::atomic<int32_t> authenticatedLinks;
     static std::atomic<bool> pairingSeen;
     static std::atomic<bool> everHealthy;
+    static std::atomic<uint32_t> reboots;
 };
 
 #endif

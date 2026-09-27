@@ -495,6 +495,33 @@ void IridiumModule::countSession()
     saveDailyCount();
 }
 
+uint8_t IridiumModule::daySessionsUsed()
+{
+    if (!dailyLoaded)
+        loadDailyCount();
+    if (today() != dailyDay)
+        return 0;
+    return dailyCount > 255 ? 255 : static_cast<uint8_t>(dailyCount);
+}
+
+// With a pass list from the phone, a routine session waits for a window; a ring alert or a
+// queued gateway message goes at once; with no list ever written there is no gate. Never CSQ.
+bool IridiumModule::insidePassWindow()
+{
+    IridiumPipe *pipe = IridiumPipe::instance();
+    if (!pipe || !pipe->passListWritten())
+        return true;
+    const uint32_t nowEpoch = getValidTime(RTCQualityDevice, true);
+    if (nowEpoch == 0)
+        return true;
+    for (size_t i = 0; i < pipe->passWindowCount(); ++i) {
+        const IridiumPipe::PassWindow &w = pipe->passWindow(i);
+        if (nowEpoch >= w.startEpochS && nowEpoch < w.startEpochS + w.durationS)
+            return true;
+    }
+    return false;
+}
+
 bool IridiumModule::canOpenSession()
 {
     if (!dailyLoaded)
@@ -511,6 +538,16 @@ bool IridiumModule::canOpenSession()
     if (holding && !Throttle::hasElapsed(holdUntilMs, HOLD_AFTER_32_36_MS))
         return false;
     holding = false;
+    IridiumPipe *pipe = IridiumPipe::instance();
+    const bool urgent = mtWaiting || mtQueued > 0 || (pipe && pipe->stats().ringPending);
+    if (!urgent && !insidePassWindow()) {
+        static uint32_t lastWindowLogMs = 0;
+        if (Throttle::hasElapsed(lastWindowLogMs, 5 * 60 * 1000UL)) {
+            LOG_INFO("MeshSat Iridium: text waits for the next pass window");
+            lastWindowLogMs = millis();
+        }
+        return false;
+    }
     return Throttle::hasElapsed(lastAttemptMs, ATTEMPT_GAP_MS);
 }
 

@@ -64,6 +64,24 @@ class IridiumPipe : private concurrency::OSThread
     // Two bytes: contract version, then the IridiumModemOwner value; notified on every owner change.
     static constexpr const char *STATUS_UUID = "69a4064d-78b9-46e5-a30a-1862e553245a";
     static constexpr uint8_t CONTRACT_VERSION = 1;
+    // Contract v2 (MESHSAT-1378), additive: node health for the apps, and pass windows from the phone.
+    static constexpr const char *STATS_UUID = "9c22cf07-2256-4fc2-b6ee-ab0ceb12198d";
+    static constexpr const char *PASS_UUID = "5c1000e8-f411-4f3d-a4c9-5ee0610a8e66";
+    static constexpr uint8_t STATS_VERSION = 2;
+    static constexpr size_t STATS_BYTES = 48;
+    static constexpr size_t MAX_PASS_WINDOWS = 8;
+
+    struct PassWindow {
+        uint32_t startEpochS;
+        uint16_t durationS;
+        uint8_t maxElevationDeg;
+    };
+
+    // The pass list the phone last wrote; empty and "never written" until then.
+    bool passListWritten() const { return passListEverWritten; }
+    size_t passWindowCount() const { return passCount; }
+    const PassWindow &passWindow(size_t index) const { return passWindows[index]; }
+    void onPassWrite(const uint8_t *data, size_t length);
 
     static void begin();
     // Called from NimbleBluetooth::setupService(), which re-runs on every BLE re-enable.
@@ -104,6 +122,9 @@ class IridiumPipe : private concurrency::OSThread
     void updateOwner();
     void setOwner(IridiumModemOwner owner);
     void publishStatus();
+    uint8_t statusFlags() const;
+    void publishStats();
+    void applyPendingPassList();
     void reportDrops();
     void discardPhoneBytes();
     bool pumpPhoneToModem();
@@ -128,6 +149,18 @@ class IridiumPipe : private concurrency::OSThread
 
     IridiumStats stat;
     uint32_t unownedBytes = 0;
+
+    // STATS: last published image, to notify only on change and at most every 2 s.
+    uint8_t lastStats[STATS_BYTES] = {0};
+    uint32_t lastStatsMs = 0;
+
+    // PASS: the BLE thread fills the pending copy, runOnce moves it into the live list.
+    PassWindow passWindows[MAX_PASS_WINDOWS];
+    size_t passCount = 0;
+    bool passListEverWritten = false;
+    PassWindow pendingPass[MAX_PASS_WINDOWS];
+    size_t pendingPassCount = 0;
+    std::atomic<bool> pendingPassReady{false};
     uint32_t dropsSinceLog = 0;
     uint32_t lastDropLogMs = 0;
     bool holdLogged = false;
