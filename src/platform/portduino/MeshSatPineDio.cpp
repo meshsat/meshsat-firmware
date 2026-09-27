@@ -40,6 +40,7 @@ void readYaml(const YAML::Node &lora)
     settings.address = lora["I2CAddress"].as<int>(settings.address);
     settings.maxSpiFrame = lora["BridgeFrame"].as<int>(settings.maxSpiFrame);
     settings.pollMs = lora["BridgePollMs"].as<int>(settings.pollMs);
+    settings.preamble = lora["Preamble"].as<int>(settings.preamble);
 }
 
 void writeYaml(YAML::Emitter &out)
@@ -52,6 +53,8 @@ void writeYaml(YAML::Emitter &out)
         out << YAML::Key << "BridgeFrame" << YAML::Value << YAML::Dec << settings.maxSpiFrame;
     if (settings.pollMs != defaults.pollMs)
         out << YAML::Key << "BridgePollMs" << YAML::Value << YAML::Dec << settings.pollMs;
+    if (settings.preamble != defaults.preamble)
+        out << YAML::Key << "Preamble" << YAML::Value << YAML::Dec << settings.preamble;
 }
 
 void stop()

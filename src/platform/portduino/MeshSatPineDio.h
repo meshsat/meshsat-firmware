@@ -20,12 +20,17 @@ struct Settings {
     int address = 0x28;
     int maxSpiFrame = 120;
     int pollMs = 20;
+    // Preamble symbols. The back cover's radio runs on a plain crystal that drifts for the first
+    // second of a transmission; with the usual 16 symbols a frame longer than about 80 bytes
+    // arrives damaged. A receiver locks at the end of the preamble, so a long one lets the
+    // crystal settle before the data begins. Measured on the bench: 96 is too short, 128 holds.
+    int preamble = 160;
 };
 extern Settings settings;
 
 /// True when the configuration names the back cover as the radio's bus.
 bool selected();
-/// Lora.I2CDevice, Lora.I2CAddress, Lora.BridgeFrame, Lora.BridgePollMs.
+/// Lora.I2CDevice, Lora.I2CAddress, Lora.BridgeFrame, Lora.BridgePollMs, Lora.Preamble.
 void readYaml(const YAML::Node &lora);
 void writeYaml(YAML::Emitter &out);
 /// Opens the bus, lines the bridge up and hands the radio its four pins, none of them a real

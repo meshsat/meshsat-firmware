@@ -49,6 +49,7 @@ const std::map<std::string, std::set<std::string>> &schema()
           "I2CAddress",
           "BridgeFrame",
           "BridgePollMs",
+          "Preamble",
 #endif
           "spiSpeed",
           "DIO2_AS_RF_SWITCH",
@@ -383,6 +384,7 @@ const std::map<std::string, ValueSpec> &valueSpecs()
         {"Lora.I2CAddress", {kInt, false}},
         {"Lora.BridgeFrame", {kInt, false}},
         {"Lora.BridgePollMs", {kInt, false}},
+        {"Lora.Preamble", {kInt, false}},
 #endif
         {"Lora.DIO2_AS_RF_SWITCH", {kBool, false}},
         // Accepts a float (volts) or `true` (meaning 1.8V), so both are allowed here.
