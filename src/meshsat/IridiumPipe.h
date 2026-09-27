@@ -68,7 +68,7 @@ class IridiumPipe : private concurrency::OSThread
     static constexpr const char *STATS_UUID = "9c22cf07-2256-4fc2-b6ee-ab0ceb12198d";
     static constexpr const char *PASS_UUID = "5c1000e8-f411-4f3d-a4c9-5ee0610a8e66";
     static constexpr uint8_t STATS_VERSION = 2;
-    static constexpr size_t STATS_BYTES = 48;
+    static constexpr size_t STATS_BYTES = 52;
     static constexpr size_t MAX_PASS_WINDOWS = 8;
 
     struct PassWindow {

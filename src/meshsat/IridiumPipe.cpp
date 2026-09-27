@@ -297,7 +297,7 @@ static void put32(uint8_t *out, size_t &at, uint32_t value)
         out[at++] = static_cast<uint8_t>((value >> (8 * i)) & 0xFF);
 }
 
-// STATS, contract v2: 48 bytes, little-endian, the layout in MESHSAT-1378.
+// STATS, contract v2: 52 bytes, little-endian, the layout in MESHSAT-1378.
 void IridiumPipe::publishStats()
 {
     if (!statsCharacteristic || !Throttle::hasElapsed(lastStatsMs, STATS_NOTIFY_INTERVAL_MS))
