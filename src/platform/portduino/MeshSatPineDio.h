@@ -20,10 +20,8 @@ struct Settings {
     int address = 0x28;
     int maxSpiFrame = 120;
     int pollMs = 20;
-    // Preamble symbols. The back cover's radio runs on a plain crystal that drifts for the first
-    // second of a transmission; with the usual 16 symbols a frame longer than about 80 bytes
-    // arrives damaged. A receiver locks at the end of the preamble, so a long one lets the
-    // crystal settle before the data begins. Measured on the bench: 96 is too short, 128 holds.
+    // Preamble symbols for what this node sends. Experimental: a long one helped only with the
+    // radio in a steady thermal state and does not carry long frames from a rested radio.
     int preamble = 160;
 };
 extern Settings settings;
