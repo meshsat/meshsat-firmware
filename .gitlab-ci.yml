@@ -28,7 +28,23 @@ variables:
     - git config --global --add safe.directory "$CI_PROJECT_DIR"
     - pip install -q "platformio==6.1.19"
   script:
-    - pio run -e "$ENV" 2>&1 | tee build.log
+    # The pioarduino platform builds a nested Python environment of its own (builder/penv_setup.py)
+    # with its own PlatformIO core, and its SCons 4.11 breaks under the outer SCons 4.8.1
+    # ("No module named SCons.Tool.FortranCommon"). Pin that inner core to 6.1.19 as well:
+    # install the platform first, let the first build create the environment, then pin and build.
+    - pio pkg install -e "$ENV"
+    - |
+      set +e
+      pio run -e "$ENV" 2>&1 | tee build.log
+      rc=${PIPESTATUS[0]}
+      set -e
+      if [ "$rc" != 0 ] && grep -q "SCons.Tool.FortranCommon" build.log; then
+        echo "pinning pioarduino's inner core to 6.1.19"
+        "$PLATFORMIO_CORE_DIR/penv/bin/python" -m pip install -q "pioarduino==6.1.19"
+        pio run -e "$ENV" 2>&1 | tee build.log
+      elif [ "$rc" != 0 ]; then
+        exit "$rc"
+      fi
     - |
       if grep -E "src/meshsat/.*(warning|error)" build.log; then
         echo "MeshSat sources must build with zero warnings"; exit 1
