@@ -116,19 +116,16 @@ void drawHomeScreen(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, 
     const int *rows = graphics::getTextPositions(display);
     const int16_t left = x + BASEUI_BODY_LR_MARGIN;
     const int16_t right = x + display->getWidth() - BASEUI_BODY_LR_MARGIN;
+    const int16_t line1 = rows[1] + y;
     const uint32_t now = millis();
-    char text[40];
+    char text[32];
     char age[8];
 
-    // Row 1: the node's short name in bold, its region, uptime on the right.
+    // Line 1: the node's short name in bold and its region on the left; bars and the modem's owner on the right.
     const char *shortName = owner.short_name[0] ? owner.short_name : "node";
-    drawWeighted(display, left, rows[1] + y, shortName, 2);
-    const int16_t nameW = display->getStringWidth(shortName) + 1;
-    snprintf(text, sizeof(text), " %s", myRegion && myRegion->name ? myRegion->name : "");
-    display->drawString(left + nameW + 2, rows[1] + y, text);
-    char uptime[24] = "";
-    getUptimeStr(now, "Up ", uptime, sizeof(uptime));
-    display->drawString(right - display->getStringWidth(uptime), rows[1] + y, uptime);
+    drawWeighted(display, left, line1, shortName, 2);
+    snprintf(text, sizeof(text), "  %s", myRegion && myRegion->name ? myRegion->name : "");
+    display->drawString(left + display->getStringWidth(shortName) + 1, line1, text);
 
     IridiumPipe *pipe = IridiumPipe::instance();
     if (!pipe) {
@@ -137,43 +134,43 @@ void drawHomeScreen(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, 
     }
     const IridiumStats &st = pipe->stats();
 
-    // Row 2: signal bars and the modem's owner and state.
-    const bool csqFresh = st.lastCsq >= 0 && !Throttle::hasElapsed(st.lastCsqMs, 30 * 60 * 1000UL);
-    drawSignalBars(display, left, rows[2] + y + FONT_HEIGHT_SMALL - 2, csqFresh ? (st.lastCsq > 5 ? 5 : st.lastCsq) : 0);
     const char *ownerWord = "free";
     if (pipe->owner() == IridiumModemOwner::Phone)
         ownerWord = "phone";
     else if (pipe->owner() == IridiumModemOwner::Node)
         ownerWord = "node";
-    if (!st.modemAnswered)
-        snprintf(text, sizeof(text), "modem silent");
-    else if (st.sessionInFlight)
-        snprintf(text, sizeof(text), "%s: session...", ownerWord);
-    else if (csqFresh)
-        snprintf(text, sizeof(text), "%d/5  modem: %s", st.lastCsq, ownerWord);
-    else
-        snprintf(text, sizeof(text), "modem: %s", ownerWord);
-    display->drawString(left + 24, rows[2] + y, text);
+    const int16_t ownerW = display->getStringWidth(ownerWord);
+    display->drawString(right - ownerW, line1, ownerWord);
+    const bool csqFresh = st.lastCsq >= 0 && !Throttle::hasElapsed(st.lastCsqMs, 30 * 60 * 1000UL);
+    drawSignalBars(display, right - ownerW - 24, line1 + FONT_HEIGHT_SMALL - 2, csqFresh ? (st.lastCsq > 5 ? 5 : st.lastCsq) : 0);
 
-    // Row 3: the last satellite event or what is waiting, nodes online on the right.
-    if (st.ringPending) {
-        formatAge(age, sizeof(age), now - st.ringMs);
-        snprintf(text, sizeof(text), "msg waiting %s", age);
+    // Line 2, the one big thing: the satellite state in a few words.
+    if (!st.modemAnswered) {
+        snprintf(text, sizeof(text), "Modem silent");
+    } else if (st.sessionInFlight) {
+        snprintf(text, sizeof(text), "Session...");
+    } else if (st.ringPending) {
+        snprintf(text, sizeof(text), "Msg waiting");
     } else if (st.lastSessionMs == 0) {
-        snprintf(text, sizeof(text), "sat: ready");
+        snprintf(text, sizeof(text), "Ready");
     } else {
         formatAge(age, sizeof(age), now - st.lastSessionMs);
-        if (st.lastMoStatus >= 0 && st.lastMoStatus <= 4)
-            snprintf(text, sizeof(text), "sent %s ago", age);
-        else
-            snprintf(text, sizeof(text), "%s, %s", IridiumStatusModule::moStatusWord(st.lastMoStatus), age);
+        if (st.lastMoStatus >= 0 && st.lastMoStatus <= 4) {
+            snprintf(text, sizeof(text), "Sent %s ago", age);
+        } else {
+            // Capitalised status word, e.g. "No network".
+            const char *word = IridiumStatusModule::moStatusWord(st.lastMoStatus);
+            snprintf(text, sizeof(text), "%s", word);
+            if (text[0] >= 'a' && text[0] <= 'z')
+                text[0] = static_cast<char>(text[0] - 'a' + 'A');
+        }
     }
-    display->drawXbm(left, rows[3] + y + (FONT_HEIGHT_SMALL - imgSatellite_height) / 2, imgSatellite_width, imgSatellite_height,
-                     imgSatellite);
-    display->drawString(left + imgSatellite_width + 3, rows[3] + y, text);
-    char nodes[16];
-    snprintf(nodes, sizeof(nodes), "%u nodes", (unsigned)nodeDB->getNumOnlineMeshNodes());
-    display->drawString(right - display->getStringWidth(nodes), rows[3] + y, nodes);
+    display->setFont(FONT_MEDIUM);
+    const int16_t bigY = line1 + FONT_HEIGHT_SMALL + 4;
+    if (display->getStringWidth(text) > display->getWidth() - 2 * BASEUI_BODY_LR_MARGIN)
+        display->setFont(FONT_SMALL);
+    display->drawString(left, bigY, text);
+    display->setFont(FONT_SMALL);
 }
 
 void drawHomeSatelliteRow(OLEDDisplay *display, int16_t x, int16_t y)
