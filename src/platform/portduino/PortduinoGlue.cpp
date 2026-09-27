@@ -648,6 +648,16 @@ void portduinoSetup()
 
     // if we're using a usermode driver, we need to initialize it here, to get a serial number back for mac address
     uint8_t dmac[6] = {0};
+#ifdef MESHSAT_PINEDIO_BRIDGE
+    if (meshsat_pinedio::selected()) {
+        try {
+            meshsat_pinedio::start();
+        } catch (std::exception &e) {
+            std::cerr << e.what() << std::endl;
+            exit(EXIT_FAILURE);
+        }
+    }
+#endif
     if (portduino_config.lora_spi_dev == "ch341") {
         try {
             ch341Hal = std::make_unique<Ch341Hal>(0, portduino_config.lora_usb_serial_num, portduino_config.lora_usb_vid,
@@ -725,7 +735,7 @@ void portduinoSetup()
     for (const auto *i : portduino_config.all_pins) {
         // In the case of a ch341 Lora device, we don't want to touch the system GPIO lines for Lora
         // Those GPIO are handled in our usermode driver instead.
-        if (i->config_section == "Lora" && portduino_config.lora_spi_dev == "ch341") {
+        if (i->config_section == "Lora" && (portduino_config.lora_spi_dev == "ch341" || meshsatBackCover())) {
             continue;
         }
         if (i->enabled) {
@@ -744,7 +754,7 @@ void portduinoSetup()
     for (auto i : portduino_config.extra_pins) {
         // In the case of a ch341 Lora device, we don't want to touch the system GPIO lines for Lora
         // Those GPIO are handled in our usermode driver instead.
-        if (i.config_section == "Lora" && portduino_config.lora_spi_dev == "ch341") {
+        if (i.config_section == "Lora" && (portduino_config.lora_spi_dev == "ch341" || meshsatBackCover())) {
             continue;
         }
         if (i.enabled) {
@@ -791,7 +801,7 @@ void portduinoSetup()
     for (auto i : portduino_config.extra_pins) {
         // In the case of a ch341 Lora device, we don't want to touch the system GPIO lines for Lora
         // Those GPIO are handled in our usermode driver instead.
-        if (i.config_section == "Lora" && portduino_config.lora_spi_dev == "ch341") {
+        if (i.config_section == "Lora" && (portduino_config.lora_spi_dev == "ch341" || meshsatBackCover())) {
             continue;
         }
         if (i.enabled && i.default_high) {
@@ -801,7 +811,7 @@ void portduinoSetup()
     }
 
     // Only initialize the radio pins when dealing with real, kernel controlled SPI hardware
-    if (portduino_config.lora_spi_dev != "" && portduino_config.lora_spi_dev != "ch341") {
+    if (portduino_config.lora_spi_dev != "" && portduino_config.lora_spi_dev != "ch341" && !meshsatBackCover()) {
         SPI.begin(portduino_config.lora_spi_dev.c_str());
     }
 
@@ -1003,7 +1013,11 @@ bool loadConfig(const char *configPath)
             portduino_config.lora_usb_vid = yamlConfig["Lora"]["USB_VID"].as<int>(0x1A86);
 
             portduino_config.lora_spi_dev = yamlConfig["Lora"]["spidev"].as<std::string>("spidev0.0");
-            if (portduino_config.lora_spi_dev != "ch341") {
+#ifdef MESHSAT_PINEDIO_BRIDGE
+            if (meshsat_pinedio::selected())
+                meshsat_pinedio::readYaml(yamlConfig["Lora"]);
+#endif
+            if (portduino_config.lora_spi_dev != "ch341" && !meshsatBackCover()) {
                 portduino_config.lora_spi_dev = "/dev/" + portduino_config.lora_spi_dev;
                 if (portduino_config.lora_spi_dev.length() == 14) {
                     int x = portduino_config.lora_spi_dev.at(11) - '0';

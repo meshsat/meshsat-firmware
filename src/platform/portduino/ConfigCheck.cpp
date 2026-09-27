@@ -44,6 +44,12 @@ const std::map<std::string, std::set<std::string>> &schema()
          {"Module",
           "gpiochip",
           "spidev",
+#ifdef MESHSAT_PINEDIO_BRIDGE
+          "I2CDevice",
+          "I2CAddress",
+          "BridgeFrame",
+          "BridgePollMs",
+#endif
           "spiSpeed",
           "DIO2_AS_RF_SWITCH",
           "DIO3_TCXO_VOLTAGE",
@@ -372,6 +378,12 @@ const std::map<std::string, ValueSpec> &valueSpecs()
         {"Lora.spiSpeed", {kInt, false}},
         {"Lora.gpiochip", {kInt, false}},
         {"Lora.spidev", {kString, false}},
+#ifdef MESHSAT_PINEDIO_BRIDGE
+        {"Lora.I2CDevice", {kString, false}},
+        {"Lora.I2CAddress", {kInt, false}},
+        {"Lora.BridgeFrame", {kInt, false}},
+        {"Lora.BridgePollMs", {kInt, false}},
+#endif
         {"Lora.DIO2_AS_RF_SWITCH", {kBool, false}},
         // Accepts a float (volts) or `true` (meaning 1.8V), so both are allowed here.
         {"Lora.DIO3_TCXO_VOLTAGE", {kBoolOrFloat, false}},

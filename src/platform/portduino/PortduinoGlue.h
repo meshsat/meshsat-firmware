@@ -66,6 +66,20 @@ extern std::ofstream traceFile;
 extern std::ofstream JSONFile;
 
 extern std::unique_ptr<Ch341Hal> ch341Hal;
+// MeshSat: true when the radio is the Pine64 LoRa back cover, reached through its I2C bridge.
+// Like the CH341 adapter it has no kernel SPI device and no GPIO lines of its own.
+#ifdef MESHSAT_PINEDIO_BRIDGE
+#include "platform/portduino/MeshSatPineDio.h"
+inline bool meshsatBackCover()
+{
+    return meshsat_pinedio::selected();
+}
+#else
+inline bool meshsatBackCover()
+{
+    return false;
+}
+#endif
 int initGPIOPin(int pinNum, const std::string &gpioChipname, int line);
 bool loadConfig(const char *configPath);
 static bool ends_with(std::string_view str, std::string_view suffix);
@@ -322,6 +336,10 @@ extern struct portduino_config_struct {
                 lora_spi_dev = lora_spi_dev.substr(5);
             out << YAML::Key << "spidev" << YAML::Value << lora_spi_dev;
         }
+#ifdef MESHSAT_PINEDIO_BRIDGE
+        if (meshsat_pinedio::selected())
+            meshsat_pinedio::writeYaml(out);
+#endif
         if (lora_usb_serial_num != "")
             out << YAML::Key << "USB_Serialnum" << YAML::Value << lora_usb_serial_num;
         if (spiSpeed != 2000000)

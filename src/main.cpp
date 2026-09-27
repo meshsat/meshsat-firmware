@@ -974,7 +974,7 @@ void setup()
     SPI.begin(false);
 #endif // HW_SPI1_DEVICE
 #elif ARCH_PORTDUINO
-    if (portduino_config.lora_spi_dev != "ch341") {
+    if (portduino_config.lora_spi_dev != "ch341" && !meshsatBackCover()) {
         SPI.begin();
     }
 #elif !defined(ARCH_ESP32) // ARCH_RP2040
@@ -1506,6 +1506,11 @@ void loop()
     if (portduino_config.lora_spi_dev == "ch341" && ch341Hal != nullptr) {
         ch341Hal->checkError();
     }
+#ifdef MESHSAT_PINEDIO_BRIDGE
+    if (meshsat_pinedio::selected() && meshsat_pinedio::inError()) {
+        portduino_status.LoRa_in_error = true;
+    }
+#endif
     if (portduino_status.LoRa_in_error && rebootAtMsec == 0) {
         LOG_ERROR("LoRa error detected, recovering");
         router->addInterface(nullptr);
@@ -1523,6 +1528,20 @@ void loop()
                 exit(EXIT_FAILURE);
             }
         }
+#ifdef MESHSAT_PINEDIO_BRIDGE
+        if (meshsat_pinedio::selected()) {
+            // The read index of the bridge is unknown after a failed transfer: start over.
+            RadioLibHAL = nullptr;
+            meshsat_pinedio::stop();
+            sleep(3);
+            try {
+                meshsat_pinedio::start();
+            } catch (std::exception &e) {
+                std::cerr << e.what() << std::endl;
+                exit(EXIT_FAILURE);
+            }
+        }
+#endif
         auto rIf = initLoRa();
         if (rIf) {
             router->addInterface(std::move(rIf));

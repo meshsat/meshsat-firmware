@@ -415,6 +415,10 @@ std::unique_ptr<RadioInterface> initLoRa()
               portduino_config.lora_spi_dev.c_str());
     if (portduino_config.lora_spi_dev == "ch341") {
         RadioLibHAL = ch341Hal.get(); // non-owning: the ch341 HAL stays owned by the global unique_ptr
+#ifdef MESHSAT_PINEDIO_BRIDGE
+    } else if (meshsat_pinedio::selected()) {
+        RadioLibHAL = meshsat_pinedio::hal(); // non-owning, like the ch341 HAL
+#endif
     } else {
         if (RadioLibHAL != nullptr) {
             delete RadioLibHAL;
