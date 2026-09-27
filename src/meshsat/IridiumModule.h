@@ -30,6 +30,13 @@ class IridiumModule : public SinglePortModule, private concurrency::OSThread
   public:
     IridiumModule();
 
+    // Counters for the STATS characteristic (contract v2).
+    uint32_t sessionsAsNodeCount() const { return sessionsAsNode; }
+    uint32_t sentAsNodeCount() const { return sentAsNode; }
+    uint32_t receivedAsNodeCount() const { return receivedAsNode; }
+    uint8_t daySessionsUsed();
+    uint8_t daySessionsCap() const { return MESHSAT_IRIDIUM_DAILY_SESSIONS; }
+
   protected:
     ProcessMessage handleReceived(const meshtastic_MeshPacket &mp) override;
     int32_t runOnce() override;
@@ -85,6 +92,7 @@ class IridiumModule : public SinglePortModule, private concurrency::OSThread
     void onMtFrame();
     void pumpBinary();
     bool canOpenSession();
+    bool insidePassWindow();
     void countSession();
     void loadDailyCount();
     void saveDailyCount();

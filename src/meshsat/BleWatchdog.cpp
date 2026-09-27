@@ -48,6 +48,7 @@ std::atomic<int32_t> BleWatchdog::openLinks{0};
 std::atomic<int32_t> BleWatchdog::authenticatedLinks{0};
 std::atomic<bool> BleWatchdog::pairingSeen{false};
 std::atomic<bool> BleWatchdog::everHealthy{false};
+std::atomic<uint32_t> BleWatchdog::reboots{0};
 
 static BleWatchdog *watchdogInstance = nullptr;
 
@@ -65,10 +66,11 @@ void BleWatchdog::begin()
 
     Preferences prefs;
     if (prefs.begin(NVS_NAMESPACE, true)) {
-        const uint32_t reboots = prefs.getUInt(NVS_REBOOTS, 0);
-        if (reboots > 0) {
+        const uint32_t count = prefs.getUInt(NVS_REBOOTS, 0);
+        reboots.store(count);
+        if (count > 0) {
             const String reason = prefs.getString(NVS_REASON, "");
-            LOG_INFO("BLE watchdog: %u reboots so far, last reason: %s", (unsigned)reboots, reason.c_str());
+            LOG_INFO("BLE watchdog: %u reboots so far, last reason: %s", (unsigned)count, reason.c_str());
         }
         prefs.end();
     }
@@ -116,9 +118,11 @@ void BleWatchdog::persistReboot(const char *why)
     Preferences prefs;
     if (!prefs.begin(NVS_NAMESPACE, false))
         return;
-    prefs.putUInt(NVS_REBOOTS, prefs.getUInt(NVS_REBOOTS, 0) + 1);
+    const uint32_t count = prefs.getUInt(NVS_REBOOTS, 0) + 1;
+    prefs.putUInt(NVS_REBOOTS, count);
     prefs.putString(NVS_REASON, why);
     prefs.end();
+    reboots.store(count);
 }
 
 void BleWatchdog::reboot(const char *why)

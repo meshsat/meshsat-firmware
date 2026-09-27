@@ -4,6 +4,8 @@
 
 #include "Power.h"
 #include "mesh/Throttle.h"
+#include "meshsat/BleWatchdog.h"
+#include "meshsat/IridiumModule.h"
 #include "sleep.h"
 
 #include <Arduino.h>
@@ -58,6 +60,8 @@ static HardwareSerial modemUart(MESHSAT_IRIDIUM_UART_NUM);
 static BLEServer *bleServer = nullptr;
 static BLECharacteristic *txCharacteristic = nullptr;
 static BLECharacteristic *statusCharacteristic = nullptr;
+static BLECharacteristic *statsCharacteristic = nullptr;
+static constexpr uint32_t STATS_NOTIFY_INTERVAL_MS = 2 * 1000UL;
 
 static StaticStreamBuffer_t incomingControl;
 static uint8_t incomingStorage[INCOMING_BYTES + 1];
@@ -91,8 +95,18 @@ class IridiumPipeTxCallbacks : public BLECharacteristicCallbacks
     }
 };
 
+class IridiumPipePassCallbacks : public BLECharacteristicCallbacks
+{
+    void onWrite(BLECharacteristic *characteristic) override
+    {
+        if (pipeInstance)
+            pipeInstance->onPassWrite(characteristic->getData(), characteristic->getLength());
+    }
+};
+
 static IridiumPipeRxCallbacks rxCallbacks;
 static IridiumPipeTxCallbacks txCallbacks;
+static IridiumPipePassCallbacks passCallbacks;
 
 IridiumPipe::IridiumPipe() : concurrency::OSThread("IridiumPipe")
 {
@@ -136,6 +150,15 @@ void IridiumPipe::setupBleService(BLEServer *server, bool requireEncryption)
     const uint8_t owner = pipeInstance ? static_cast<uint8_t>(pipeInstance->owner()) : 0;
     const uint8_t status[2] = {CONTRACT_VERSION, owner};
     statusCharacteristic->setValue(status, sizeof(status));
+    // Contract v2, additive: STATS (read + notify) and PASS (write).
+    statsCharacteristic = service->createCharacteristic(STATS_UUID, txProperties);
+    uint8_t emptyStats[STATS_BYTES] = {0};
+    emptyStats[0] = STATS_VERSION;
+    statsCharacteristic->setValue(emptyStats, sizeof(emptyStats));
+    BLECharacteristic *pass = service->createCharacteristic(PASS_UUID, rxProperties);
+    pass->setCallbacks(&passCallbacks);
+    if (pipeInstance)
+        pipeInstance->lastStatsMs = 0;
     service->start();
     LOG_INFO("MeshSat Iridium: BLE serial service up (%s)", requireEncryption ? "pairing required" : "open");
 }
@@ -248,6 +271,121 @@ void IridiumPipe::publishStatus()
     statusCharacteristic->notify();
 }
 
+uint8_t IridiumPipe::statusFlags() const
+{
+    uint8_t flags = 0;
+    if (stat.sessionInFlight)
+        flags |= 0x01;
+    if (stat.ringPending)
+        flags |= 0x02;
+    if (stat.modemAnswered)
+        flags |= 0x04;
+    if (incoming && xStreamBufferBytesAvailable(incoming) > INCOMING_BYTES * 3 / 4)
+        flags |= 0x08;
+    return flags;
+}
+
+static void put16(uint8_t *out, size_t &at, uint16_t value)
+{
+    out[at++] = static_cast<uint8_t>(value & 0xFF);
+    out[at++] = static_cast<uint8_t>(value >> 8);
+}
+
+static void put32(uint8_t *out, size_t &at, uint32_t value)
+{
+    for (int i = 0; i < 4; ++i)
+        out[at++] = static_cast<uint8_t>((value >> (8 * i)) & 0xFF);
+}
+
+// STATS, contract v2: 48 bytes, little-endian, the layout in MESHSAT-1378.
+void IridiumPipe::publishStats()
+{
+    if (!statsCharacteristic || !Throttle::hasElapsed(lastStatsMs, STATS_NOTIFY_INTERVAL_MS))
+        return;
+    const uint32_t now = millis();
+    uint8_t out[STATS_BYTES] = {0};
+    size_t at = 0;
+    out[at++] = STATS_VERSION;
+    out[at++] = static_cast<uint8_t>(currentOwner.load());
+    out[at++] = statusFlags();
+    out[at++] = stat.lastCsq >= 0 ? static_cast<uint8_t>(stat.lastCsq > 5 ? 5 : stat.lastCsq) : 0xFF;
+    put32(out, at, stat.lastCsq >= 0 ? (now - stat.lastCsqMs) / 1000 : 0xFFFFFFFFu);
+    put32(out, at, stat.sessions);
+    put16(out, at, static_cast<uint16_t>(static_cast<int16_t>(stat.lastMoStatus)));
+    put16(out, at, static_cast<uint16_t>(stat.lastMomsn));
+    put16(out, at, static_cast<uint16_t>(static_cast<int16_t>(stat.lastMtStatus)));
+    put16(out, at, static_cast<uint16_t>(stat.lastMtQueued));
+    put32(out, at, stat.lastSessionMs != 0 ? (now - stat.lastSessionMs) / 1000 : 0xFFFFFFFFu);
+    put32(out, at, now / 1000);
+    put32(out, at, BleWatchdog::rebootCount());
+    put32(out, at, stat.phoneBytesDropped);
+    uint32_t nodeSessions = 0, nodeSent = 0, nodeReceived = 0;
+    uint8_t dayUsed = 0, dayCap = 0;
+    if (iridiumModule) {
+        nodeSessions = iridiumModule->sessionsAsNodeCount();
+        nodeSent = iridiumModule->sentAsNodeCount();
+        nodeReceived = iridiumModule->receivedAsNodeCount();
+        dayUsed = iridiumModule->daySessionsUsed();
+        dayCap = iridiumModule->daySessionsCap();
+    }
+    put32(out, at, nodeSessions);
+    put32(out, at, nodeSent);
+    put32(out, at, nodeReceived);
+    out[at++] = dayUsed;
+    out[at++] = dayCap;
+    // Two reserved bytes stay zero.
+
+    // Ages move every second; compare everything but them so idle nodes stay quiet.
+    uint8_t compareNew[STATS_BYTES];
+    uint8_t compareOld[STATS_BYTES];
+    memcpy(compareNew, out, STATS_BYTES);
+    memcpy(compareOld, lastStats, STATS_BYTES);
+    memset(compareNew + 4, 0, 4);
+    memset(compareOld + 4, 0, 4);
+    memset(compareNew + 20, 0, 4);
+    memset(compareOld + 20, 0, 4);
+    memset(compareNew + 24, 0, 4);
+    memset(compareOld + 24, 0, 4);
+    const bool changed = memcmp(compareNew, compareOld, STATS_BYTES) != 0;
+    statsCharacteristic->setValue(out, STATS_BYTES);
+    if (changed)
+        statsCharacteristic->notify();
+    memcpy(lastStats, out, STATS_BYTES);
+    lastStatsMs = now;
+}
+
+// PASS, contract v2: [01][n][n x (u32 startEpochS, u16 durationS, u8 maxElevationDeg)], little-endian.
+void IridiumPipe::onPassWrite(const uint8_t *data, size_t length)
+{
+    if (!data || length < 2 || data[0] != 1)
+        return;
+    size_t count = data[1];
+    if (count > MAX_PASS_WINDOWS)
+        count = MAX_PASS_WINDOWS;
+    if (length < 2 + count * 7)
+        return;
+    for (size_t i = 0; i < count; ++i) {
+        const uint8_t *p = data + 2 + i * 7;
+        pendingPass[i].startEpochS = static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+                                     (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+        pendingPass[i].durationS = static_cast<uint16_t>(p[4] | (p[5] << 8));
+        pendingPass[i].maxElevationDeg = p[6];
+    }
+    pendingPassCount = count;
+    pendingPassReady.store(true);
+}
+
+void IridiumPipe::applyPendingPassList()
+{
+    if (!pendingPassReady.exchange(false))
+        return;
+    passCount = pendingPassCount;
+    for (size_t i = 0; i < passCount; ++i)
+        passWindows[i] = pendingPass[i];
+    passListEverWritten = true;
+    LOG_INFO("MeshSat Iridium: phone wrote %u pass window(s)", static_cast<unsigned>(passCount));
+}
+
 void IridiumPipe::onPhoneWrite(const uint8_t *data, size_t length)
 {
     if (!incoming || !data || length == 0)
@@ -289,6 +427,8 @@ int32_t IridiumPipe::runOnce()
 {
     updateOwner();
     reportDrops();
+    applyPendingPassList();
+    publishStats();
 
     // Bytes a phone writes without owning the modem are dropped, so nothing stale runs later.
     if (currentOwner.load() != IridiumModemOwner::Phone)
