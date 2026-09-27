@@ -55,20 +55,23 @@ esptool --chip esp32s3 --port /dev/ttyACM0 write-flash \
   0x670000 .pio/build/meshsat-tbeam-s3-rockblock/littlefs-meshsat-tbeam-s3-rockblock-*.bin
 ```
 
-Then set it up like any Meshtastic node: region, owner name and a fixed Bluetooth PIN. Updates go over USB the same way. Over-the-air updates are not supported by this fork.
+Then set it up like any Meshtastic node: region, owner name and a fixed Bluetooth PIN. Add a channel named `i9603` if the node should carry texts over the satellite on its own; that is the only channel it sends. Updates go over USB the same way. Over-the-air updates are not supported by this fork.
 
 ## What is proven, and what is not
 
-|                                                                        | State                                                                                       |
-| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| Meshtastic and Iridium services on one Bluetooth connection (XIAO, v0) | Verified 19 Sep 2026 with MeshSat Android and a laptop client                               |
-| Taking and releasing the modem                                         | Verified: STATUS `01 00`, `01 01`, `01 00`, and writes from a non-owner discarded           |
-| Long modem replies over notifications                                  | A 300-byte reply arrives intact, and a binary loopback of up to 270 bytes returns identical |
-| Satellite messages through the pipe                                    | One out and one in, 19 Sep 2026                                                             |
-| T-Beam Supreme variant (v1)                                            | Builds. **Not run on hardware yet**                                                         |
-| Routing on the node, owner `02`                                        | **Not built yet**                                                                           |
-| Deployment to a real end user                                          | **Never**                                                                                   |
-| Use in an actual emergency                                             | **Never**                                                                                   |
+|                                                                        | State                                                                                                                                                                                                              |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Meshtastic and Iridium services on one Bluetooth connection (XIAO, v0) | Verified 19 Sep 2026 with MeshSat Android and a laptop client                                                                                                                                                      |
+| Taking and releasing the modem                                         | Verified: STATUS `01 00`, `01 01`, `01 00`, and writes from a non-owner discarded                                                                                                                                  |
+| Long modem replies over notifications                                  | A 300-byte reply arrives intact, and a binary loopback of up to 270 bytes returns identical                                                                                                                        |
+| Satellite messages through the pipe                                    | One out and one in, 19 Sep 2026                                                                                                                                                                                    |
+| T-Beam Supreme variant (v1)                                            | Running since 21 Sep 2026: paired with the app, modem through the pipe, satellite messages both ways from a garden                                                                                                 |
+| Recovery from a Bluetooth drop, the watchdog, the modem probe          | Bench, 26 Sep 2026: six reconnects reclaimed the modem within a second, a session held through a drop, the watchdog rebooted after three unpaired links and read its reason back                                   |
+| Routing on the node, owner `02`                                        | Built, 27 Sep 2026: the node carries the mesh channel `i9603` over Iridium when no phone holds the modem. Init, status reads and hand-over proven on the desk; **no satellite message sent by the node alone yet** |
+| Contract v2, STATS and PASS                                            | Served since 27 Sep 2026; STATUS still reports version 1 until both apps read version 2                                                                                                                            |
+| The screen and the LED                                                 | MeshSat boot screen, a Satellite frame, a home screen built around the modem, and the blue LED as satellite state, all seen on the T-Beam                                                                          |
+| Deployment to a real end user                                          | **Never**                                                                                                                                                                                                          |
+| Use in an actual emergency                                             | **Never**                                                                                                                                                                                                          |
 
 ## Following upstream
 
