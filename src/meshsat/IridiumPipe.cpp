@@ -12,12 +12,14 @@
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <HardwareSerial.h>
+#include <Preferences.h>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <driver/gpio.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/stream_buffer.h>
+#include <services/gatt/ble_svc_gatt.h>
 
 // Holds several AT+SBDWB payloads (340 bytes + checksum each) plus their command lines.
 static constexpr size_t INCOMING_BYTES = 2048;
@@ -123,6 +125,34 @@ void IridiumPipe::begin()
     pipeInstance->deepSleepObserver.observe(&notifyDeepSleep);
     pipeInstance->powerModem(true);
     pipeInstance->openUart();
+
+    // Service Changed bookkeeping: after a table change, announce for the next boots.
+    Preferences prefs;
+    if (prefs.begin("meshsat", false)) {
+        uint32_t left = prefs.getUInt("gattLeft", 0);
+        if (prefs.getUInt("gattVer", 0) != GATT_TABLE_VERSION) {
+            prefs.putUInt("gattVer", GATT_TABLE_VERSION);
+            left = SERVICE_CHANGED_BOOTS;
+        } else if (left > 0) {
+            left--;
+        }
+        prefs.putUInt("gattLeft", left);
+        prefs.end();
+        pipeInstance->announceServiceChanged = left > 0;
+        if (left > 0)
+            LOG_INFO("MeshSat Iridium: GATT table version %u, Service Changed announced on authenticated links for %u more boots",
+                     (unsigned)GATT_TABLE_VERSION, (unsigned)left);
+    }
+}
+
+void IridiumPipe::onAuthenticated(uint16_t connHandle)
+{
+    (void)connHandle;
+    if (!announceServiceChanged)
+        return;
+    // Indicate the whole range: a bonded phone then drops its cached table and discovers again.
+    ble_svc_gatt_changed(0x0001, 0xFFFF);
+    LOG_INFO("MeshSat Iridium: Service Changed indicated to the new link");
 }
 
 IridiumPipe *IridiumPipe::instance()
