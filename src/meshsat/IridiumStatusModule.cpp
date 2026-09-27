@@ -11,6 +11,7 @@
 #include "graphics/ScreenFonts.h"
 #include "graphics/SharedUIDisplay.h"
 #include "graphics/images.h"
+#include "meshsat/MeshSatBootScreen.h"
 #endif
 
 #if defined(HAS_PMU)
@@ -94,16 +95,20 @@ void IridiumStatusModule::noteEvents()
         }
 #if HAS_SCREEN
         if (screen) {
-            char text[48];
-            if (sent && st.lastMtLength > 0)
-                snprintf(text, sizeof(text), "Satellite: sent, %u B in", (unsigned)st.lastMtLength);
-            else if (sent)
-                snprintf(text, sizeof(text), "Satellite: sent");
-            else if (st.lastMoStatus < 0)
-                snprintf(text, sizeof(text), "Satellite: session error");
-            else
-                snprintf(text, sizeof(text), "Satellite: %s (%d)", moStatusWord(st.lastMoStatus), st.lastMoStatus);
-            screen->showSimpleBanner(text, BANNER_MS);
+            const bool received = st.lastMtStatus == 1 && st.lastMtLength > 0;
+            if (received || sent) {
+                // A message came in or went out: the envelope animation, ended from runOnce.
+                meshsat::startMessageAnimation(received);
+                animationUntilMs = millis() + meshsat::MESSAGE_ANIMATION_MS;
+                animationRunning = true;
+            } else {
+                char text[48];
+                if (st.lastMoStatus < 0)
+                    snprintf(text, sizeof(text), "Satellite: session error");
+                else
+                    snprintf(text, sizeof(text), "Satellite: %s (%d)", moStatusWord(st.lastMoStatus), st.lastMoStatus);
+                screen->showSimpleBanner(text, BANNER_MS);
+            }
         }
 #endif
     }
@@ -255,7 +260,15 @@ int32_t IridiumStatusModule::driveLed()
 int32_t IridiumStatusModule::runOnce()
 {
     noteEvents();
-    return driveLed();
+#if HAS_SCREEN
+    if (animationRunning && Throttle::deadlinePassed(animationUntilMs)) {
+        animationRunning = false;
+        if (screen)
+            screen->endAlert();
+    }
+#endif
+    const int32_t next = driveLed();
+    return animationRunning && next > POLL_LED_MS ? POLL_LED_MS : next;
 }
 
 // ---- the frame ----

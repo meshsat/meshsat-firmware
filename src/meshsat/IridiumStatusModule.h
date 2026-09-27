@@ -73,6 +73,8 @@ class IridiumStatusModule : public MeshModule, private concurrency::OSThread
     uint32_t lastWaitingBlinkMs = 0;
     bool pendingSentBlink = false;
     bool pendingFailBlink = false;
+    bool animationRunning = false;
+    uint32_t animationUntilMs = 0;
 };
 
 #endif

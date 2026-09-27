@@ -1121,7 +1121,14 @@ int32_t Screen::runOnce()
     // set the OEM frames and end the boot screen together, so the OEM screen never appeared.
     static bool showingOEMBootScreen = true;
     static uint32_t oemSinceMsec = 0;
-    if (showingOEMBootScreen && Throttle::hasElapsed(serialSinceMsec, logo_timeout / 2)) {
+#if MESHSAT_IRIDIUM
+    const uint32_t firstLogoMs = meshsat::BOOT_FIRST_LOGO_MS;
+    const uint32_t oemLogoMs = meshsat::BOOT_MESHSAT_MS;
+#else
+    const uint32_t firstLogoMs = logo_timeout / 2;
+    const uint32_t oemLogoMs = logo_timeout / 2;
+#endif
+    if (showingOEMBootScreen && Throttle::hasElapsed(serialSinceMsec, firstLogoMs)) {
         LOG_INFO("Switch to OEM screen...");
         // Change frames.
 #if MESHSAT_IRIDIUM
@@ -1138,7 +1145,7 @@ int32_t Screen::runOnce()
         showingOEMBootScreen = false;
         oemSinceMsec = millis();
     }
-    const bool bootScreenDone = !showingOEMBootScreen && Throttle::hasElapsed(oemSinceMsec, logo_timeout / 2);
+    const bool bootScreenDone = !showingOEMBootScreen && Throttle::hasElapsed(oemSinceMsec, oemLogoMs);
 #else
     const bool bootScreenDone = Throttle::hasElapsed(serialSinceMsec, logo_timeout);
 #endif
@@ -1428,7 +1435,11 @@ void Screen::setFrames(FrameFocus focus)
 
     if (!hiddenFrames.home) {
         fsi.positions.home = numframes;
+#if MESHSAT_IRIDIUM
+        normalFrames[numframes++] = meshsat::drawHomeScreen;
+#else
         normalFrames[numframes++] = graphics::UIRenderer::drawDeviceFocused;
+#endif
         indicatorIcons.push_back(icon_home);
         PUSH_FRAME_TITLE("Home");
     }
