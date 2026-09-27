@@ -710,6 +710,8 @@ class NimbleBluetoothSecurityCallback : public BLESecurityCallbacks
 
 #if MESHSAT_IRIDIUM
         BleWatchdog::noteHealthy();
+        if (IridiumPipe::instance())
+            IridiumPipe::instance()->onAuthenticated(desc->conn_handle);
 #endif
 
         meshtastic::BluetoothStatus newStatus(meshtastic::BluetoothStatus::ConnectionState::CONNECTED);

@@ -89,6 +89,14 @@ class IridiumPipe : private concurrency::OSThread
         uint8_t maxElevationDeg;
     };
 
+    // Bumped whenever the service's attribute table changes (a characteristic added or removed).
+    // A bonded phone keeps a cached copy of the table; for the boots after a change the node
+    // indicates Service Changed to every authenticated peer so the phone discovers again.
+    static constexpr uint32_t GATT_TABLE_VERSION = 2;
+    static constexpr uint32_t SERVICE_CHANGED_BOOTS = 20;
+    // Called from NimbleBluetooth after an authenticated link comes up.
+    void onAuthenticated(uint16_t connHandle);
+
     // The pass list the phone last wrote; empty and "never written" until then.
     bool passListWritten() const { return passListEverWritten; }
     size_t passWindowCount() const { return passCount; }
@@ -161,6 +169,7 @@ class IridiumPipe : private concurrency::OSThread
 
     IridiumStats stat;
     uint32_t unownedBytes = 0;
+    bool announceServiceChanged = false;
 
     // STATS: last published image, to notify only on change and at most every 2 s.
     uint8_t lastStats[STATS_BYTES] = {0};
