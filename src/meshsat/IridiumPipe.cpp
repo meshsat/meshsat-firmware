@@ -548,6 +548,7 @@ void IridiumPipe::updateOwner()
     if (incoming)
         xStreamBufferReset(incoming);
     setOwner(IridiumModemOwner::None);
+    stat.lastPhoneReleaseMs = millis();
     LOG_INFO("MeshSat Iridium: phone released the modem");
 }
 
