@@ -148,7 +148,11 @@ void IridiumPipe::setupBleService(BLEServer *server, bool requireEncryption)
     txCharacteristic->setCallbacks(&txCallbacks);
     statusCharacteristic = service->createCharacteristic(STATUS_UUID, txProperties);
     const uint8_t owner = pipeInstance ? static_cast<uint8_t>(pipeInstance->owner()) : 0;
-    const uint8_t status[STATUS_BYTES] = {CONTRACT_VERSION, owner, 0, 0xFF};
+    uint8_t status[STATUS_BYTES] = {CONTRACT_VERSION, owner};
+    if (STATUS_BYTES >= 4) {
+        status[2] = 0;
+        status[3] = 0xFF;
+    }
     statusCharacteristic->setValue(status, sizeof(status));
     // Contract v2, additive: STATS (read + notify) and PASS (write).
     statsCharacteristic = service->createCharacteristic(STATS_UUID, txProperties);
@@ -268,9 +272,12 @@ void IridiumPipe::publishStatus()
 {
     if (!statusCharacteristic)
         return;
-    const uint8_t status[STATUS_BYTES] = {CONTRACT_VERSION, static_cast<uint8_t>(currentOwner.load()), statusFlags(),
-                                          stat.lastCsq >= 0 ? static_cast<uint8_t>(stat.lastCsq > 5 ? 5 : stat.lastCsq) : 0xFF};
-    const bool notify = status[1] != lastStatus[1] || status[2] != lastStatus[2];
+    uint8_t status[STATUS_BYTES] = {CONTRACT_VERSION, static_cast<uint8_t>(currentOwner.load())};
+    if (STATUS_BYTES >= 4) {
+        status[2] = statusFlags();
+        status[3] = stat.lastCsq >= 0 ? static_cast<uint8_t>(stat.lastCsq > 5 ? 5 : stat.lastCsq) : 0xFF;
+    }
+    const bool notify = status[1] != lastStatus[1] || (STATUS_BYTES >= 4 && status[2] != lastStatus[2]);
     statusCharacteristic->setValue(status, sizeof(status));
     if (notify)
         statusCharacteristic->notify();
@@ -434,7 +441,7 @@ int32_t IridiumPipe::runOnce()
     updateOwner();
     reportDrops();
     applyPendingPassList();
-    if (statusFlags() != lastStatus[2])
+    if (STATUS_BYTES >= 4 && statusFlags() != lastStatus[2])
         publishStatus();
     publishStats();
 
