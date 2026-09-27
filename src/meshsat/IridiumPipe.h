@@ -64,8 +64,18 @@ class IridiumPipe : private concurrency::OSThread
     // Contract v2: version, owner, flags, signal; notified when the owner or the flags change.
     // A v1 client reads the first two bytes and sees the same owner byte as before.
     static constexpr const char *STATUS_UUID = "69a4064d-78b9-46e5-a30a-1862e553245a";
+// STATUS at version 2 only once the apps that read it are INSTALLED, not merely committed: a
+// version 1 app on the phone ignored the 4-byte notification and never got the modem (27 Sep 2026).
+#ifndef MESHSAT_STATUS_V2
+#define MESHSAT_STATUS_V2 0
+#endif
+#if MESHSAT_STATUS_V2
     static constexpr uint8_t CONTRACT_VERSION = 2;
     static constexpr size_t STATUS_BYTES = 4;
+#else
+    static constexpr uint8_t CONTRACT_VERSION = 1;
+    static constexpr size_t STATUS_BYTES = 2;
+#endif
     // Contract v2 (MESHSAT-1378), additive: node health for the apps, and pass windows from the phone.
     static constexpr const char *STATS_UUID = "9c22cf07-2256-4fc2-b6ee-ab0ceb12198d";
     static constexpr const char *PASS_UUID = "5c1000e8-f411-4f3d-a4c9-5ee0610a8e66";
