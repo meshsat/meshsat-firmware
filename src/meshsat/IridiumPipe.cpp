@@ -26,6 +26,8 @@ static constexpr size_t INCOMING_BYTES = 2048;
 static constexpr size_t UART_RX_BUFFER_BYTES = 1024;
 static constexpr size_t UART_TX_BUFFER_BYTES = 512;
 static constexpr size_t COPY_CHUNK_BYTES = 128;
+// The 9603 takes at most 340 bytes in AT+SBDWB.
+static constexpr long MO_PAYLOAD_MAX_BYTES = 340;
 
 static constexpr size_t ATT_HEADER_BYTES = 3;
 static constexpr size_t DEFAULT_NOTIFY_BYTES = 20;
@@ -716,6 +718,10 @@ void IridiumPipe::notePhoneBytes(const uint8_t *data, size_t length)
 {
     for (size_t i = 0; i < length; ++i) {
         const uint8_t value = data[i];
+        if (payloadSkip > 0) {
+            payloadSkip--;
+            continue;
+        }
         if (value == '\r' || value == '\n') {
             if (commandLength > 0)
                 onCommandLine();
@@ -723,7 +729,7 @@ void IridiumPipe::notePhoneBytes(const uint8_t *data, size_t length)
             continue;
         }
         if (commandLength >= COMMAND_LINE_BYTES - 1) {
-            // Binary payload (SBDWB), not a command line.
+            // Longer than any command the readers care about.
             commandLength = 0;
             continue;
         }
@@ -750,6 +756,13 @@ void IridiumPipe::noteModemByte(uint8_t value)
 void IridiumPipe::onCommandLine()
 {
     commandLine[commandLength] = '\0';
+    // The payload and its two checksum bytes follow with no terminator; left in the line, they
+    // would hide the next command, and a session right after a write would go unnoticed.
+    if (strncmp(commandLine, "AT+SBDWB=", 9) == 0) {
+        const long announced = strtol(commandLine + 9, nullptr, 10);
+        payloadSkip = announced > 0 && announced <= MO_PAYLOAD_MAX_BYTES ? static_cast<size_t>(announced) + 2 : 0;
+        return;
+    }
     // AT+SBDIX and AT+SBDIXA both open a billed session.
     if (strncmp(commandLine, "AT+SBDIX", 8) == 0) {
         const uint32_t now = millis();
@@ -766,6 +779,10 @@ void IridiumPipe::onResponseLine()
 {
     responseLine[responseLength] = '\0';
     const uint32_t now = millis();
+
+    // Anything but READY (or the command's echo) while a payload is expected means the modem is not taking one.
+    if (payloadSkip > 0 && strcmp(responseLine, "READY") != 0 && strncasecmp(responseLine, "AT", 2) != 0)
+        payloadSkip = 0;
 
     if (strncmp(responseLine, "+SBDIX:", 7) == 0) {
         // +SBDIX: <MO status>, <MOMSN>, <MT status>, <MTMSN>, <MT length>, <MT queued>

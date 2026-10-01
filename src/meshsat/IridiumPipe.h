@@ -204,6 +204,8 @@ class IridiumPipe : private concurrency::OSThread
     static constexpr size_t RESPONSE_LINE_BYTES = 96;
     char commandLine[COMMAND_LINE_BYTES];
     size_t commandLength = 0;
+    // Bytes of an AT+SBDWB payload still to come: binary with no terminator, never part of a command line.
+    size_t payloadSkip = 0;
     char responseLine[RESPONSE_LINE_BYTES];
     size_t responseLength = 0;
 
