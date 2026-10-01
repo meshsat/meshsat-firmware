@@ -43,8 +43,12 @@ static constexpr const char *NVS_DAY = "ridxDay";
 static constexpr const char *NVS_COUNT = "ridxCnt";
 
 // The Bridge's connect sequence. AT&K0 first: two Ground Control pages disagree on the flow-control default.
-static const char *const INIT_SEQUENCE[] = {"AT&K0", "ATE0", "AT&D0", "AT", "AT+CGSN", "AT+SBDMTA=1", "AT+SBDD0", "AT+SBDD1"};
+// No AT+SBDD1: a message a client's session brought in and did not read is still in the modem.
+static const char *const INIT_SEQUENCE[] = {"AT&K0", "ATE0", "AT&D0", "AT", "AT+CGSN", "AT+SBDMTA=1", "AT+SBDD0"};
 static constexpr uint8_t INIT_STEPS = sizeof(INIT_SEQUENCE) / sizeof(INIT_SEQUENCE[0]);
+static constexpr uint8_t MT_READ_TRIES = 3;
+// One clear for a broadcast message and one for the node's own text, before a client gets the modem.
+static constexpr uint8_t HANDOVER_CLEARS = 2;
 
 IridiumModule::IridiumModule()
     : SinglePortModule("IridiumRoute", meshtastic_PortNum_TEXT_MESSAGE_APP), concurrency::OSThread("IridiumRoute")
@@ -82,6 +86,14 @@ ProcessMessage IridiumModule::handleReceived(const meshtastic_MeshPacket &mp)
     // so nothing loops back to the modem.
     if (mp.decoded.payload.size == 0 || !isIridiumChannel(mp.channel))
         return ProcessMessage::CONTINUE;
+    // A client on the pipe is the gateway. A text kept here while it holds the modem would go
+    // out again when the node takes the modem back.
+    const IridiumPipe *pipe = IridiumPipe::instance();
+    if (pipe && pipe->phoneWantsModem()) {
+        LOG_INFO("MeshSat Iridium: text from 0x%08x on \"%s\" left to the client that holds the modem", (unsigned)mp.from,
+                 MESHSAT_IRIDIUM_CHANNEL_NAME);
+        return ProcessMessage::CONTINUE;
+    }
     enqueue(mp);
     return ProcessMessage::CONTINUE;
 }
@@ -125,16 +137,17 @@ size_t IridiumModule::encodeMo(const meshtastic_MeshPacket &mp, uint8_t *out, si
     return length;
 }
 
-void IridiumModule::deliverMt(const uint8_t *data, size_t length)
+bool IridiumModule::deliverMt(const uint8_t *data, size_t length)
 {
     const int8_t index = iridiumChannelIndex();
     if (index < 0) {
-        LOG_WARN("MeshSat Iridium: channel \"%s\" is not configured, satellite message dropped", MESHSAT_IRIDIUM_CHANNEL_NAME);
-        return;
+        LOG_WARN("MeshSat Iridium: channel \"%s\" is not configured, satellite message left in the modem",
+                 MESHSAT_IRIDIUM_CHANNEL_NAME);
+        return false;
     }
     meshtastic_MeshPacket *p = allocDataPacket();
     if (!p)
-        return;
+        return false;
     // The Hub compresses MT text with its SMAZ2 variant by default; plain text passes through unchanged.
     const size_t limit = sizeof(p->decoded.payload.bytes);
     size_t n = meshsat::smaz2Decompress(data, length, p->decoded.payload.bytes, limit);
@@ -150,6 +163,7 @@ void IridiumModule::deliverMt(const uint8_t *data, size_t length)
     service->sendToMesh(p, RX_SRC_LOCAL, true);
     receivedAsNode++;
     LOG_INFO("MeshSat Iridium: satellite message of %u B broadcast on \"%s\"", (unsigned)n, MESHSAT_IRIDIUM_CHANNEL_NAME);
+    return true;
 }
 
 // ---- modem ownership ----
@@ -173,9 +187,25 @@ void IridiumModule::takeOrReleaseModem()
         startInit();
         return;
     }
-    // A phone gets the modem between commands, never during a session or a read.
-    if (pipe->phoneWantsModem() && state != State::Session && state != State::ReadMt && state != State::WriteStatus)
-        release("phone asked for it");
+    // A phone gets the modem between commands, never during a write, a session or a read.
+    if (!pipe->phoneWantsModem() || state == State::Session || state == State::ReadMt || state == State::WriteReady ||
+        state == State::WriteStatus)
+        return;
+    // Nothing of the node's stays in the modem: its text would ride on the client's next session,
+    // and a message it has broadcast would be read a second time.
+    if ((needClearMt || moWritten) && handoverClears < HANDOVER_CLEARS) {
+        if (state == State::Idle) {
+            handoverClears++;
+            LOG_INFO("MeshSat Iridium: clearing the node's %s from the modem before the hand-over",
+                     needClearMt ? "broadcast message" : "text");
+            if (needClearMt)
+                sendCommand("AT+SBDD1", Command::ClearMt, COMMAND_TIMEOUT_MS);
+            else
+                sendCommand("AT+SBDD0", Command::ClearMo, COMMAND_TIMEOUT_MS);
+        }
+        return;
+    }
+    release("phone asked for it");
 }
 
 void IridiumModule::release(const char *why)
@@ -184,6 +214,7 @@ void IridiumModule::release(const char *why)
     state = State::Off;
     command = Command::None;
     lineLength = 0;
+    handoverClears = 0;
     if (pipe)
         pipe->releaseFromNode();
     LOG_INFO("MeshSat Iridium: node released the modem (%s)", why);
@@ -196,6 +227,11 @@ void IridiumModule::startInit()
     initStep = 0;
     initRetries = 0;
     moWritten = false;
+    mtInBuffer = false;
+    mtReadFailures = 0;
+    needClearMt = false;
+    checkMtAfterTake = true;
+    handoverClears = 0;
     state = State::Init;
     sendCommand(INIT_SEQUENCE[0], Command::InitStep, COMMAND_TIMEOUT_MS);
 }
@@ -348,7 +384,7 @@ void IridiumModule::onCommandDone(bool ok)
         needClearMo = false;
     }
     if (done == Command::ClearMt)
-        mtInBuffer = false;
+        needClearMt = false;
 }
 
 void IridiumModule::onSbdsx(const char *text)
@@ -365,10 +401,14 @@ void IridiumModule::onSbdsx(const char *text)
         while (*cursor == ',' || *cursor == ' ')
             ++cursor;
     }
-    if (fields[2] == 1 || fields[4] == 1 || fields[5] > 0) {
+    // The MT flag is a message already in the modem, free to read; the other two are at the gateway.
+    if (fields[2] == 1 && !mtInBuffer) {
+        mtInBuffer = true;
+        LOG_INFO("MeshSat Iridium: SBDSX says a message is in the modem (MTMSN %ld), reading it", fields[3]);
+    }
+    if (fields[4] == 1 || fields[5] > 0) {
         mtWaiting = true;
-        LOG_INFO("MeshSat Iridium: SBDSX says a message is waiting (MT %ld, RA %ld, queued %ld)", fields[2], fields[4],
-                 fields[5]);
+        LOG_INFO("MeshSat Iridium: SBDSX says a message is waiting (RA %ld, queued %ld)", fields[4], fields[5]);
     }
 }
 
@@ -444,18 +484,36 @@ void IridiumModule::onMtFrame()
     for (uint16_t i = 0; i < length; ++i)
         sum = static_cast<uint16_t>(sum + frame[2 + i]);
     const uint16_t given = static_cast<uint16_t>((frame[2 + length] << 8) | frame[3 + length]);
-    state = State::Idle;
+    // The OK after the frame ends the read; the clear follows from Idle.
+    state = State::Command;
+    command = Command::ReadMtDone;
+    commandSentMs = millis();
+    commandTimeoutMs = COMMAND_TIMEOUT_MS;
     lineLength = 0;
-    mtInBuffer = false;
-    if (length == 0 || length > MT_MAX_BYTES) {
-        LOG_WARN("MeshSat Iridium: SBDRB frame of %u B ignored", (unsigned)length);
-    } else if (sum != given) {
-        LOG_WARN("MeshSat Iridium: SBDRB checksum mismatch, message dropped");
-    } else {
-        deliverMt(frame + 2, length);
+    if (length > MT_MAX_BYTES || sum != given) {
+        onMtReadFailed("SBDRB checksum mismatch");
+        return;
     }
-    // The OK after the frame is consumed by the next command's line reader; clear the MT buffer now.
-    sendCommand("AT+SBDD1", Command::ClearMt, COMMAND_TIMEOUT_MS);
+    mtInBuffer = false;
+    mtReadFailures = 0;
+    if (length == 0) {
+        LOG_INFO("MeshSat Iridium: the modem's MT buffer is empty");
+        return;
+    }
+    needClearMt = deliverMt(frame + 2, length);
+}
+
+// A message that cannot be read stays in the modem, for the next try or for a client.
+void IridiumModule::onMtReadFailed(const char *why)
+{
+    if (++mtReadFailures < MT_READ_TRIES) {
+        LOG_WARN("MeshSat Iridium: %s, reading again", why);
+        mtInBuffer = true;
+        return;
+    }
+    LOG_WARN("MeshSat Iridium: %s %u times, message left in the modem", why, (unsigned)MT_READ_TRIES);
+    mtInBuffer = false;
+    mtReadFailures = 0;
 }
 
 // ---- session budget ----
@@ -599,9 +657,12 @@ int32_t IridiumModule::runOnce()
         countSession();
         state = State::Idle;
     } else if (state == State::ReadMt && Throttle::hasElapsed(commandSentMs, READ_TIMEOUT_MS)) {
-        LOG_WARN("MeshSat Iridium: SBDRB gave no frame, clearing");
-        mtInBuffer = false;
-        sendCommand("AT+SBDD1", Command::ClearMt, COMMAND_TIMEOUT_MS);
+        state = State::Idle;
+        lineLength = 0;
+        // What is left of a broken frame must not start the next one.
+        while (pipe->nodeAvailable() > 0)
+            pipe->nodeRead();
+        onMtReadFailed("SBDRB gave no frame");
     }
 
     if (state != State::Idle)
@@ -609,8 +670,23 @@ int32_t IridiumModule::runOnce()
 
     // Idle: decide the next command.
     const IridiumStats &st = pipe->stats();
-    if (mtInBuffer) {
+    const bool clientWaits = pipe->phoneWantsModem();
+    if (needClearMt && !clientWaits) {
+        sendCommand("AT+SBDD1", Command::ClearMt, COMMAND_TIMEOUT_MS);
+        return POLL_BUSY_MS;
+    }
+    // A message in the modem is broadcast before a waiting client gets it; a retry does not hold the client off.
+    if (mtInBuffer && (mtReadFailures == 0 || !clientWaits)) {
         startReadMt();
+        return POLL_BUSY_MS;
+    }
+    // The hand-over, with its clears, runs at the top of the next run.
+    if (clientWaits)
+        return POLL_BUSY_MS;
+    if (checkMtAfterTake) {
+        checkMtAfterTake = false;
+        lastSbdsxMs = millis();
+        sendCommand("AT+SBDSX", Command::Sbdsx, COMMAND_TIMEOUT_MS);
         return POLL_BUSY_MS;
     }
     if (needClearMo) {

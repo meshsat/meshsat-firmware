@@ -834,7 +834,8 @@ void IridiumPipe::onResponseLine()
             while (*cursor == ',' || *cursor == ' ')
                 ++cursor;
         }
-        if ((fields[2] == 1 || fields[4] == 1 || fields[5] > 0) && !stat.ringPending) {
+        // The MT flag is a message already in the modem, read for free; it is no reason for a session.
+        if ((fields[4] == 1 || fields[5] > 0) && !stat.ringPending) {
             stat.ringPending = true;
             stat.ringMs = now;
         }
