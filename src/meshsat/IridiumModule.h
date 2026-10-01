@@ -59,7 +59,7 @@ class IridiumModule : public SinglePortModule, private concurrency::OSThread
         ReadMt,
     };
 
-    enum class Command : uint8_t { None, InitStep, Sbdsx, Csq, ClearMo, ClearMt, Sbdix };
+    enum class Command : uint8_t { None, InitStep, Sbdsx, Csq, ClearMo, ClearMt, Sbdix, ReadMtDone };
 
     struct Outbound {
         uint8_t bytes[340];
@@ -90,6 +90,7 @@ class IridiumModule : public SinglePortModule, private concurrency::OSThread
     void onSessionResult(const char *line);
     void onSbdsx(const char *line);
     void onMtFrame();
+    void onMtReadFailed(const char *why);
     void pumpBinary();
     bool canOpenSession();
     bool insidePassWindow();
@@ -100,7 +101,8 @@ class IridiumModule : public SinglePortModule, private concurrency::OSThread
 
     // Payload on the wire, kept apart so the format can follow the Hub's.
     size_t encodeMo(const meshtastic_MeshPacket &mp, uint8_t *out, size_t capacity);
-    void deliverMt(const uint8_t *data, size_t length);
+    // False when the message could not be broadcast; it then stays in the modem.
+    bool deliverMt(const uint8_t *data, size_t length);
 
     State state = State::Off;
     Command command = Command::None;
@@ -124,8 +126,15 @@ class IridiumModule : public SinglePortModule, private concurrency::OSThread
     bool needClearMo = false;
     // SBDSX, a ring or a queued count says the gateway holds a message: open a session.
     bool mtWaiting = false;
-    // The last session put a message in the modem's MT buffer: read it.
+    // A message is in the modem's MT buffer, from the last session or left by a client: read it.
     bool mtInBuffer = false;
+    uint8_t mtReadFailures = 0;
+    // Only a message the node has broadcast is cleared from the modem.
+    bool needClearMt = false;
+    // After taking the modem, SBDSX runs before anything else: a session would overwrite a waiting message.
+    bool checkMtAfterTake = false;
+    // Clears sent for a waiting client, so a silent modem cannot keep it waiting.
+    uint8_t handoverClears = 0;
     uint32_t mtQueued = 0;
     uint32_t lastAttemptMs = 0;
     uint32_t holdUntilMs = 0;
