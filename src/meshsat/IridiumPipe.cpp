@@ -19,6 +19,7 @@
 #include <driver/gpio.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/stream_buffer.h>
+#include <host/ble_store.h>
 #include <services/gatt/ble_svc_gatt.h>
 
 // Holds several AT+SBDWB payloads (340 bytes + checksum each) plus their command lines.
@@ -108,9 +109,22 @@ class IridiumPipePassCallbacks : public BLECharacteristicCallbacks
     }
 };
 
+// NimBLE makes room in a full store by deleting the oldest bond; that phone must then pair again.
+class IridiumPipeStoreCallbacks : public BLEDeviceCallbacks
+{
+    int onStoreStatus(struct ble_store_status_event *event, void *arg) override
+    {
+        if (event && event->event_code == BLE_STORE_EVENT_OVERFLOW)
+            LOG_WARN("MeshSat Iridium: Bluetooth store full (object type %d), the oldest bond is removed",
+                     event->overflow.obj_type);
+        return BLEDeviceCallbacks::onStoreStatus(event, arg);
+    }
+};
+
 static IridiumPipeRxCallbacks rxCallbacks;
 static IridiumPipeTxCallbacks txCallbacks;
 static IridiumPipePassCallbacks passCallbacks;
+static IridiumPipeStoreCallbacks storeCallbacks;
 
 IridiumPipe::IridiumPipe() : concurrency::OSThread("IridiumPipe")
 {
@@ -165,6 +179,7 @@ IridiumPipe *IridiumPipe::instance()
 void IridiumPipe::setupBleService(BLEServer *server, bool requireEncryption)
 {
     bleServer = server;
+    BLEDevice::setDeviceCallbacks(&storeCallbacks);
 
     uint32_t rxProperties = BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR;
     uint32_t txProperties = BLECharacteristic::PROPERTY_NOTIFY | BLECharacteristic::PROPERTY_READ;
