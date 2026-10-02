@@ -5,6 +5,7 @@
 #include "Power.h"
 #include "mesh/Throttle.h"
 #include "meshsat/BleWatchdog.h"
+#include "meshsat/DownReason.h"
 #include "meshsat/IridiumModule.h"
 #include "sleep.h"
 
@@ -136,6 +137,7 @@ void IridiumPipe::begin()
 {
     if (pipeInstance)
         return;
+    meshsat::loadDownReason();
     incoming = xStreamBufferCreateStatic(INCOMING_BYTES, 1, incomingStorage, &incomingControl);
     pipeInstance = new IridiumPipe();
     pipeInstance->deepSleepObserver.observe(&notifyDeepSleep);
@@ -259,6 +261,7 @@ void IridiumPipe::powerModem(bool on)
 int IridiumPipe::prepareDeepSleep(void *unused)
 {
     (void)unused;
+    meshsat::noteDeepSleep();
     closeUart();
     powerModem(false);
     return 0;
@@ -393,7 +396,9 @@ void IridiumPipe::publishStats()
     put32(out, at, nodeReceived);
     out[at++] = dayUsed;
     out[at++] = dayCap;
-    // Two reserved bytes stay zero.
+    // Why the previous run ended, and the battery at that stop in units of 100 mV (0 = not recorded).
+    out[at++] = static_cast<uint8_t>(meshsat::lastDownCause());
+    out[at++] = meshsat::lastDownBatteryDecivolts();
 
     // Ages move every second; compare everything but them so idle nodes stay quiet.
     uint8_t compareNew[STATS_BYTES];
