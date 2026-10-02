@@ -12,15 +12,16 @@ namespace meshsat
 // Why the node's previous run ended. The values are the wire values of STATS byte 50.
 enum class DownCause : uint8_t {
     Unknown = 0,
-    // Power came back after being gone: the cell was pulled or collapsed, or this is a first start.
+    // The chip started from cold: power came back after being gone, the reset button, or the
+    // reset a flashing tool ends with. The ESP32-S3 reports all three alike.
     PowerOn = 1,
-    // The reset button, or a flashing tool over USB.
+    // A reset over USB or JTAG while the node ran.
     ExternalReset = 2,
     // A restart the firmware asked for: a settings change, a reboot from an app.
     Restart = 3,
     BleWatchdog = 4,
     Crash = 5,
-    // A hardware watchdog timer, which also covers the reset a flashing tool ends with.
+    // A hardware watchdog timer: the firmware hung.
     Watchdog = 6,
     Brownout = 7,
     // The battery read empty and the node shut itself off.
