@@ -7,7 +7,12 @@
 #include "meshsat/DownReason.h"
 #include "meshsat/IridiumPipe.h"
 
+#include "nimble/NimbleBluetooth.h"
+
+#include <BLEDevice.h>
 #include <Preferences.h>
+#include <host/ble_gap.h>
+#include <host/ble_hs.h>
 
 #ifndef MESHSAT_BLE_WATCHDOG_FAILED_CONNECTS
 #define MESHSAT_BLE_WATCHDOG_FAILED_CONNECTS 3
@@ -35,6 +40,11 @@ static constexpr uint32_t REBOOT_DELAY_MS = 2 * 1000UL;
 static constexpr uint32_t PAIRING_GRACE_MS = 120 * 1000UL;
 // Failed links this old are forgotten, so one stale link never blocks the idle path (MESHSAT-1267).
 static constexpr uint32_t STALE_FAILURE_MS = 30 * 60 * 1000UL;
+
+// With no link open the node must be advertising, or no phone can reach it until a power cycle.
+// After this many checks in a row without it, advertising is started again; then the node reboots.
+static constexpr uint8_t DARK_CHECKS_TO_ADVERTISE = 2;
+static constexpr uint8_t DARK_CHECKS_TO_REBOOT = 4;
 
 static constexpr const char *NVS_NAMESPACE = "meshsat";
 static constexpr const char *NVS_REBOOTS = "wdReboots";
@@ -164,6 +174,27 @@ int32_t BleWatchdog::runOnce()
                 reboot(healthyOnce ? "links open but never authenticate" : "links open, none authenticated since boot");
                 return CHECK_INTERVAL_MS;
             }
+        }
+    }
+
+    // Bluetooth is up, nobody is connected and nothing is advertised (MESHSAT-1381).
+    const bool bleUp = config.bluetooth.enabled && nimbleBluetooth && nimbleBluetooth->isActive() && !nimbleBluetooth->isDeInit;
+    // The library's own count of links, not this watchdog's: a missed disconnect must not hide the state.
+    BLEServer *server = bleUp ? BLEDevice::getServer() : nullptr;
+    const bool dark =
+        server && ble_hs_synced() && server->getConnectedCount() == 0 && !nimbleBluetooth->isConnected() && !ble_gap_adv_active();
+    if (!dark) {
+        darkChecks = 0;
+    } else if (++darkChecks == DARK_CHECKS_TO_ADVERTISE) {
+        LOG_WARN("BLE watchdog: not advertising and no link open for %us, advertising again",
+                 (unsigned)(DARK_CHECKS_TO_ADVERTISE * CHECK_INTERVAL_MS / 1000));
+        nimbleBluetooth->startAdvertising();
+    } else if (darkChecks >= DARK_CHECKS_TO_REBOOT) {
+        if (modemBusy()) {
+            LOG_WARN("BLE watchdog: still not advertising, holding off, satellite session in flight");
+        } else {
+            reboot("not advertising with no link open");
+            return CHECK_INTERVAL_MS;
         }
     }
 
