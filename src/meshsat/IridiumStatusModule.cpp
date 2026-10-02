@@ -4,6 +4,7 @@
 
 #include "main.h"
 #include "mesh/Throttle.h"
+#include "meshsat/DownReason.h"
 #include "meshsat/IridiumPipe.h"
 
 #if HAS_SCREEN
@@ -88,6 +89,20 @@ void IridiumStatusModule::noteEvents()
     // session would pop a banner over the MeshSat logo. During the quiet window the events are
     // noted for the LED and the frame, nothing is shown.
     const bool quiet = !Throttle::hasElapsed(0, BOOT_QUIET_MS);
+
+#if HAS_SCREEN
+    // Once, when the boot screen is gone: say so if the last run did not end by a normal start or restart.
+    if (!quiet && !lastStopShown) {
+        lastStopShown = true;
+        const meshsat::DownCause cause = meshsat::lastDownCause();
+        if (screen && (meshsat::downCauseIsFault(cause) || cause == meshsat::DownCause::LowBattery ||
+                       cause == meshsat::DownCause::BleWatchdog)) {
+            char text[48];
+            snprintf(text, sizeof(text), "Last stop: %s", meshsat::downCauseText(cause));
+            screen->showSimpleBanner(text, 2 * BANNER_MS);
+        }
+    }
+#endif
 
     if (st.lastSessionMs != seenSessionMs && st.lastSessionMs != 0) {
         seenSessionMs = st.lastSessionMs;

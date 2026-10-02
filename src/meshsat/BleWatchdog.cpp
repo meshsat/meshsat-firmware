@@ -4,6 +4,7 @@
 
 #include "main.h"
 #include "mesh/Throttle.h"
+#include "meshsat/DownReason.h"
 #include "meshsat/IridiumPipe.h"
 
 #include <Preferences.h>
@@ -123,6 +124,7 @@ void BleWatchdog::persistReboot(const char *why)
     prefs.putString(NVS_REASON, why);
     prefs.end();
     reboots.store(count);
+    meshsat::noteDown(meshsat::DownCause::BleWatchdog);
 }
 
 void BleWatchdog::reboot(const char *why)
