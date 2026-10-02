@@ -186,8 +186,8 @@ int32_t BleWatchdog::runOnce()
     if (!dark) {
         darkChecks = 0;
     } else if (++darkChecks == DARK_CHECKS_TO_ADVERTISE) {
-        LOG_WARN("BLE watchdog: not advertising and no link open for %us, advertising again",
-                 (unsigned)(DARK_CHECKS_TO_ADVERTISE * CHECK_INTERVAL_MS / 1000));
+        LOG_WARN("BLE watchdog: not advertising and no link open on %u checks in a row, advertising again",
+                 (unsigned)DARK_CHECKS_TO_ADVERTISE);
         nimbleBluetooth->startAdvertising();
     } else if (darkChecks >= DARK_CHECKS_TO_REBOOT) {
         if (modemBusy()) {
