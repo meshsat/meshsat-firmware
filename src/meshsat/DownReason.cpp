@@ -122,9 +122,9 @@ const char *downCauseText(DownCause cause)
 {
     switch (cause) {
     case DownCause::PowerOn:
-        return "power loss";
+        return "power loss or reset";
     case DownCause::ExternalReset:
-        return "reset button or USB";
+        return "USB reset";
     case DownCause::Restart:
         return "restart";
     case DownCause::BleWatchdog:
