@@ -9,8 +9,9 @@
 #include <atomic>
 #include <cstdint>
 
-// Reboots a node whose BLE stack accepts links but never authenticates one, and optionally when
-// it has been idle for MESHSAT_BLE_WATCHDOG_IDLE_HOURS. Never while an Iridium session is in flight.
+// Reboots a node whose BLE stack accepts links but never authenticates one, restarts advertising
+// (then reboots) when it stopped with no link open, and optionally reboots a node idle for
+// MESHSAT_BLE_WATCHDOG_IDLE_HOURS. Never while an Iridium session is in flight.
 class BleWatchdog : private concurrency::OSThread
 {
   public:
@@ -33,6 +34,9 @@ class BleWatchdog : private concurrency::OSThread
     bool modemBusy() const;
     void reboot(const char *why);
     static void persistReboot(const char *why);
+
+    // Checks in a row that found Bluetooth up, no link open and nothing advertised.
+    uint8_t darkChecks = 0;
 
     static std::atomic<uint32_t> unauthenticatedConnects;
     static std::atomic<uint32_t> firstFailedConnectMs;
