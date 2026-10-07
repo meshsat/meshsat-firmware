@@ -189,6 +189,11 @@ class IridiumPipe : private concurrency::OSThread
     uint32_t lastDropLogMs = 0;
     bool holdLogged = false;
 
+    bool uartOpen = false;
+#if MESHSAT_IRIDIUM_JSPR
+    uint32_t modemPoweredMs = 0;
+#endif
+
     // Modem health while unowned.
     bool healthAwaiting = false;
     uint32_t healthSentMs = 0;
