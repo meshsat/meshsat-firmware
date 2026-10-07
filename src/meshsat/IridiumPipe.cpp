@@ -25,7 +25,15 @@
 
 // Holds several AT+SBDWB payloads (340 bytes + checksum each) plus their command lines.
 static constexpr size_t INCOMING_BYTES = 2048;
+#if MESHSAT_IRIDIUM_JSPR
+// A JSPR segment line carries up to 1446 bytes as base64.
+static constexpr size_t UART_RX_BUFFER_BYTES = 4096;
+// The 9704 takes no voltage on its inputs before it has booted: about 25 s of supercapacitor charge on
+// V_BATT, up to 30 s of boot, then the 5 s the Bridge lets it settle.
+static constexpr uint32_t JSPR_BOOT_WAIT_MS = 60 * 1000UL;
+#else
 static constexpr size_t UART_RX_BUFFER_BYTES = 1024;
+#endif
 static constexpr size_t UART_TX_BUFFER_BYTES = 512;
 static constexpr size_t COPY_CHUNK_BYTES = 128;
 // The 9603 takes at most 340 bytes in AT+SBDWB.
@@ -141,8 +149,16 @@ void IridiumPipe::begin()
     incoming = xStreamBufferCreateStatic(INCOMING_BYTES, 1, incomingStorage, &incomingControl);
     pipeInstance = new IridiumPipe();
     pipeInstance->deepSleepObserver.observe(&notifyDeepSleep);
+#if MESHSAT_IRIDIUM_JSPR
+    // TX stays high-impedance (UART0 owns GPIO43 after reset); runOnce() opens the UART once the 9704 has booted.
+    pinMode(MESHSAT_IRIDIUM_TX_PIN, INPUT);
+    pinMode(MESHSAT_IRIDIUM_RX_PIN, INPUT);
+    pipeInstance->powerModem(true);
+    pipeInstance->modemPoweredMs = millis();
+#else
     pipeInstance->powerModem(true);
     pipeInstance->openUart();
+#endif
 
     // Service Changed bookkeeping: after a table change, announce for the next boots.
     Preferences prefs;
@@ -224,13 +240,16 @@ void IridiumPipe::openUart()
     modemUart.setHwFlowCtrlMode(UART_HW_FLOWCTRL_DISABLE);
     // Keeps RX idle-high when no modem is connected, so a floating wire is not read as data.
     gpio_pullup_en(static_cast<gpio_num_t>(MESHSAT_IRIDIUM_RX_PIN));
+    uartOpen = true;
     LOG_INFO("MeshSat Iridium: RockBLOCK on UART%d, TX GPIO%d, RX GPIO%d, %d 8N1", MESHSAT_IRIDIUM_UART_NUM,
              MESHSAT_IRIDIUM_TX_PIN, MESHSAT_IRIDIUM_RX_PIN, MESHSAT_IRIDIUM_BAUD);
 }
 
 void IridiumPipe::closeUart()
 {
-    modemUart.end();
+    if (uartOpen)
+        modemUart.end();
+    uartOpen = false;
     // An idle-high TX pin or a pull-up would feed current into an unpowered modem.
     pinMode(MESHSAT_IRIDIUM_TX_PIN, INPUT);
     gpio_pullup_dis(static_cast<gpio_num_t>(MESHSAT_IRIDIUM_RX_PIN));
@@ -501,6 +520,14 @@ int32_t IridiumPipe::runOnce()
     if (currentOwner.load() != IridiumModemOwner::Phone)
         discardPhoneBytes();
 
+#if MESHSAT_IRIDIUM_JSPR
+    if (!uartOpen) {
+        if (!Throttle::hasElapsed(modemPoweredMs, JSPR_BOOT_WAIT_MS))
+            return IDLE_INTERVAL_MS;
+        openUart();
+    }
+#endif
+
     bool busy = false;
     switch (currentOwner.load()) {
     case IridiumModemOwner::Phone:
@@ -514,7 +541,10 @@ int32_t IridiumPipe::runOnce()
         break;
     case IridiumModemOwner::None:
         busy |= drainModem();
+#if !MESHSAT_IRIDIUM_JSPR
+        // The 9704 gets no AT probe and no power cycle: it must finish a shutdown before power returns.
         runHealthCheck();
+#endif
         break;
     case IridiumModemOwner::Node:
         break;
@@ -766,9 +796,14 @@ void IridiumPipe::noteModemByte(uint8_t value)
         return;
     }
     if (responseLength >= RESPONSE_LINE_BYTES - 1) {
+#if MESHSAT_IRIDIUM_JSPR
+        // JSON runs past the buffer; the code and target at the front are all the reader needs.
+        return;
+#else
         // Binary payload (SBDRB), not a response line.
         responseLength = 0;
         return;
+#endif
     }
     responseLine[responseLength++] = static_cast<char>(value);
 }
@@ -776,6 +811,10 @@ void IridiumPipe::noteModemByte(uint8_t value)
 void IridiumPipe::onCommandLine()
 {
     commandLine[commandLength] = '\0';
+#if MESHSAT_IRIDIUM_JSPR
+    // An AT session would be counted with no +SBDIX ever coming back to end it.
+    return;
+#endif
     // The payload and its two checksum bytes follow with no terminator; left in the line, they
     // would hide the next command, and a session right after a write would go unnoticed.
     if (strncmp(commandLine, "AT+SBDWB=", 9) == 0) {
@@ -799,6 +838,19 @@ void IridiumPipe::onResponseLine()
 {
     responseLine[responseLength] = '\0';
     const uint32_t now = millis();
+
+#if MESHSAT_IRIDIUM_JSPR
+    // "<code> <target> {json}": any reply, or an unsolicited 299, shows the 9704 is up.
+    const unsigned char *code = reinterpret_cast<const unsigned char *>(responseLine);
+    if (responseLength >= 4 && isdigit(code[0]) && isdigit(code[1]) && isdigit(code[2]) && code[3] == ' ') {
+        if (!stat.modemAnswered)
+            LOG_INFO("MeshSat Iridium: 9704 answers: %.48s", responseLine);
+        LOG_DEBUG("MeshSat Iridium: JSPR %.48s", responseLine);
+        stat.modemAnswered = true;
+        stat.lastModemOkMs = now;
+    }
+    return;
+#endif
 
     // Anything but READY (or the command's echo) while a payload is expected means the modem is not taking one.
     if (payloadSkip > 0 && strcmp(responseLine, "READY") != 0 && strncasecmp(responseLine, "AT", 2) != 0)

@@ -132,7 +132,9 @@ void setupModules()
     IridiumPipe::begin();
     BleWatchdog::begin();
     new IridiumStatusModule();
+#if !MESHSAT_IRIDIUM_JSPR
     new IridiumModule();
+#endif
 #endif
 #if (HAS_BUTTON || ARCH_PORTDUINO) && !MESHTASTIC_EXCLUDE_INPUTBROKER
     if (config.display.displaymode != meshtastic_Config_DisplayConfig_DisplayMode_COLOR) {

@@ -1579,7 +1579,10 @@ bool Power::axpChipInit()
 
             // not use channel
             PMU->disablePowerOutput(XPOWERS_DCDC2); // not elicited
+            // MeshSat 9704 build: the Iridium pipe owns DCDC5, and a cut on a warm reboot would interrupt the modem's run.
+#if !MESHSAT_IRIDIUM_JSPR
             PMU->disablePowerOutput(XPOWERS_DCDC5); // not elicited
+#endif
             PMU->disablePowerOutput(XPOWERS_DLDO1); // Invalid power channel, it does not exist
             PMU->disablePowerOutput(XPOWERS_DLDO2); // Invalid power channel, it does not exist
             PMU->disablePowerOutput(XPOWERS_VBACKUP);
