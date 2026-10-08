@@ -3,6 +3,7 @@
 #if MESHSAT_IRIDIUM
 
 #include "Power.h"
+#include "PowerStatus.h"
 #include "mesh/Throttle.h"
 #include "meshsat/BleWatchdog.h"
 #include "meshsat/DownReason.h"
@@ -28,9 +29,35 @@ static constexpr size_t INCOMING_BYTES = 2048;
 #if MESHSAT_IRIDIUM_JSPR
 // A JSPR segment line carries up to 1446 bytes as base64.
 static constexpr size_t UART_RX_BUFFER_BYTES = 4096;
-// The 9704 takes no voltage on its inputs before it has booted: about 25 s of supercapacitor charge on
-// V_BATT, up to 30 s of boot, then the 5 s the Bridge lets it settle.
+// Prototype guard with four wires: the 9704 takes no voltage on its inputs before it has booted, and
+// without I_BTD nothing says when that is. Ground Control gives about 25 s of supercapacitor charge
+// on V_BATT; the rest is margin, not a vendor bound. Counted from the supply enable.
 static constexpr uint32_t JSPR_BOOT_WAIT_MS = 60 * 1000UL;
+// Cell thresholds for the modem's supply, in mV, with hysteresis. Placeholders until the bench sets
+// them (MESHSAT-1507): DC5 is a 3.7 V buck, the 9704's V_BATT floor is 3.6 V, and the rail follows
+// the cell below about 3.8 V. A variant may override both.
+#ifndef MESHSAT_IRIDIUM_CELL_ON_MV
+#define MESHSAT_IRIDIUM_CELL_ON_MV 3800
+#endif
+#ifndef MESHSAT_IRIDIUM_CELL_OFF_MV
+#define MESHSAT_IRIDIUM_CELL_OFF_MV 3700
+#endif
+static constexpr uint32_t CELL_SAMPLE_MS = 5 * 1000UL;
+// Sustained readings before the supply changes: 30 s above the on-threshold, 15 s below the off-threshold.
+static constexpr uint8_t CELL_OK_SAMPLES = 6;
+static constexpr uint8_t CELL_LOW_SAMPLES = 3;
+// After the supply goes off, time for the 9704's own shutdown on its supercapacitors before power may return.
+static constexpr uint32_t MIN_OFF_MS = 30 * 1000UL;
+// Four-wire readiness probe while nobody owns the modem: one GET apiVersion, the UART closed again
+// between misses so the inputs are high-impedance, never a power cycle.
+static constexpr uint32_t PROBE_REPLY_MS = 10 * 1000UL;
+static constexpr uint32_t PROBE_INTERVAL_MIN_MS = 60 * 1000UL;
+static constexpr uint32_t PROBE_INTERVAL_MAX_MS = 10 * 60 * 1000UL;
+static constexpr uint32_t PROBE_MISSES_TO_FAULT = 5;
+#ifdef MESHSAT_IRIDIUM_BOOTED_PIN
+// With I_BTD wired, a start that never reads booted within this time is a fault.
+static constexpr uint32_t BOOTED_WAIT_MAX_MS = 3 * JSPR_BOOT_WAIT_MS;
+#endif
 #else
 static constexpr size_t UART_RX_BUFFER_BYTES = 1024;
 #endif
@@ -150,11 +177,22 @@ void IridiumPipe::begin()
     pipeInstance = new IridiumPipe();
     pipeInstance->deepSleepObserver.observe(&notifyDeepSleep);
 #if MESHSAT_IRIDIUM_JSPR
-    // TX stays high-impedance (UART0 owns GPIO43 after reset); runOnce() opens the UART once the 9704 has booted.
+    // Inputs stay high-impedance (UART0 owns GPIO43 after reset) until the modem has booted.
     pinMode(MESHSAT_IRIDIUM_TX_PIN, INPUT);
     pinMode(MESHSAT_IRIDIUM_RX_PIN, INPUT);
-    pipeInstance->powerModem(true);
-    pipeInstance->modemPoweredMs = millis();
+#ifdef MESHSAT_IRIDIUM_BOOTED_PIN
+    pinMode(MESHSAT_IRIDIUM_BOOTED_PIN, INPUT);
+#endif
+    // A warm reboot keeps the rail on and the modem may be mid-start: the guard runs again, nothing is toggled.
+    bool railOn = false;
+#ifdef MESHSAT_IRIDIUM_DCDC5_MV
+    railOn = PMU && PMU->isPowerChannelEnable(XPOWERS_DCDC5);
+#endif
+    if (railOn)
+        pipeInstance->startModem(millis(), true);
+    else
+        LOG_INFO("MeshSat Iridium: modem supply off at boot; on once the cell allows it (on at %d mV, off at %d mV)",
+                 MESHSAT_IRIDIUM_CELL_ON_MV, MESHSAT_IRIDIUM_CELL_OFF_MV);
 #else
     pipeInstance->powerModem(true);
     pipeInstance->openUart();
@@ -241,6 +279,11 @@ void IridiumPipe::openUart()
     // Keeps RX idle-high when no modem is connected, so a floating wire is not read as data.
     gpio_pullup_en(static_cast<gpio_num_t>(MESHSAT_IRIDIUM_RX_PIN));
     uartOpen = true;
+#if MESHSAT_IRIDIUM_JSPR
+    // A bare CR ends whatever the ROM's reset text left in the 9704's line parser (it answers 405
+    // MALFORMED), so a client's first request is not glued to it.
+    modemUart.write("\r");
+#endif
     LOG_INFO("MeshSat Iridium: RockBLOCK on UART%d, TX GPIO%d, RX GPIO%d, %d 8N1", MESHSAT_IRIDIUM_UART_NUM,
              MESHSAT_IRIDIUM_TX_PIN, MESHSAT_IRIDIUM_RX_PIN, MESHSAT_IRIDIUM_BAUD);
 }
@@ -271,11 +314,195 @@ void IridiumPipe::powerModem(bool on)
     } else {
         PMU->disablePowerOutput(XPOWERS_DCDC5);
     }
-    LOG_INFO("MeshSat Iridium: modem supply %s (DCDC5, %d mV)", on ? "on" : "off", MESHSAT_IRIDIUM_DCDC5_MV);
+#if MESHSAT_IRIDIUM_JSPR
+    // The guard and the minimum off interval count from the switch, not from boot.
+    if (on)
+        modemPoweredMs = millis();
+    else
+        modemOffMs = millis();
+#endif
+    LOG_INFO("MeshSat Iridium: modem supply %s (DCDC5, %d mV, readback %s)", on ? "on" : "off", MESHSAT_IRIDIUM_DCDC5_MV,
+             PMU->isPowerChannelEnable(XPOWERS_DCDC5) ? "on" : "off");
 #else
     (void)on;
 #endif
 }
+
+#if MESHSAT_IRIDIUM_JSPR
+IridiumModemPower IridiumPipe::modemPower() const
+{
+    return modemPowerState;
+}
+
+void IridiumPipe::sampleCell(uint32_t now)
+{
+    if (!Throttle::hasElapsed(lastCellSampleMs, CELL_SAMPLE_MS))
+        return;
+    lastCellSampleMs = now;
+    // No reading yet counts as neither: the supply waits for the first one.
+    const bool usb = powerStatus && powerStatus->getHasUSB();
+    const bool hasCell = powerStatus && powerStatus->getHasBattery();
+    const int mv = hasCell ? powerStatus->getBatteryVoltageMv() : 0;
+    // On USB the rail is fed from USB; the cell matters again the moment USB leaves.
+    const bool ok = usb || (hasCell && mv >= MESHSAT_IRIDIUM_CELL_ON_MV);
+    const bool low = !usb && hasCell && mv < MESHSAT_IRIDIUM_CELL_OFF_MV;
+    cellOkSamples = ok ? (usb ? CELL_OK_SAMPLES : static_cast<uint8_t>(cellOkSamples < 255 ? cellOkSamples + 1 : 255)) : 0;
+    cellLowSamples = low ? static_cast<uint8_t>(cellLowSamples < 255 ? cellLowSamples + 1 : 255) : 0;
+}
+
+void IridiumPipe::startModem(uint32_t now, bool railAlreadyOn)
+{
+    pinMode(MESHSAT_IRIDIUM_TX_PIN, INPUT);
+    pinMode(MESHSAT_IRIDIUM_RX_PIN, INPUT);
+    if (railAlreadyOn) {
+        modemPoweredMs = now;
+        LOG_INFO("MeshSat Iridium: modem supply already on at boot; it may be mid-start, guard restarted, nothing toggled");
+    } else {
+        powerModem(true);
+    }
+    modemPowerState = IridiumModemPower::Starting;
+    stat.modemAnswered = false;
+    probeAwaiting = false;
+    probeMisses = 0;
+    probeIntervalMs = PROBE_INTERVAL_MIN_MS;
+}
+
+void IridiumPipe::stopModem(const char *why)
+{
+    // The documented order: serial stops, the inputs go high-impedance, then the supply. The 9704
+    // finishes its own shutdown on its supercapacitors.
+    closeUart();
+    powerModem(false);
+    modemPowerState = IridiumModemPower::Inhibited;
+    stat.modemAnswered = false;
+    probeAwaiting = false;
+    cellOkSamples = 0;
+    LOG_WARN("MeshSat Iridium: modem supply off: %s", why);
+    (void)why;
+}
+
+void IridiumPipe::sendProbe(uint32_t now)
+{
+    if (!uartOpen)
+        openUart();
+    modemUart.write("GET apiVersion {}\r");
+    probeAwaiting = true;
+    probeSentMs = now;
+    lastProbeMs = now;
+    LOG_INFO("MeshSat Iridium: readiness probe %u of %u", static_cast<unsigned>(probeMisses + 1),
+             static_cast<unsigned>(PROBE_MISSES_TO_FAULT));
+}
+
+void IridiumPipe::runModemPower(uint32_t now)
+{
+    sampleCell(now);
+    const bool stopWanted = cellLowSamples >= CELL_LOW_SAMPLES;
+    const bool clientOn = currentOwner.load() != IridiumModemOwner::None;
+    switch (modemPowerState) {
+    case IridiumModemPower::Inhibited:
+        if (modemOffMs != 0 && !Throttle::hasElapsed(modemOffMs, MIN_OFF_MS))
+            return;
+        if (cellOkSamples >= CELL_OK_SAMPLES)
+            startModem(now, false);
+        return;
+    case IridiumModemPower::Starting:
+        if (stopWanted) {
+            stopModem("cell under the off-threshold while starting");
+            return;
+        }
+#ifdef MESHSAT_IRIDIUM_BOOTED_PIN
+        if (digitalRead(MESHSAT_IRIDIUM_BOOTED_PIN) == HIGH) {
+            openUart();
+            modemPowerState = IridiumModemPower::Running;
+            LOG_INFO("MeshSat Iridium: I_BTD high, the modem has booted");
+        } else if (Throttle::hasElapsed(modemPoweredMs, BOOTED_WAIT_MAX_MS)) {
+            modemPowerState = IridiumModemPower::Fault;
+            LOG_ERROR("MeshSat Iridium: I_BTD never went high; supply left on, no power cycle, fault latched");
+        }
+#else
+        // Four wires: nothing says booted. After the guard, one probe into a modem whose start is unobserved.
+        if (Throttle::hasElapsed(modemPoweredMs, JSPR_BOOT_WAIT_MS)) {
+            modemPowerState = IridiumModemPower::Running;
+            if (clientOn)
+                openUart();
+            else
+                sendProbe(now);
+        }
+#endif
+        return;
+    case IridiumModemPower::Running:
+        if (stopWanted) {
+            stopModem("cell under the off-threshold");
+            return;
+        }
+#ifdef MESHSAT_IRIDIUM_BOOTED_PIN
+        if (digitalRead(MESHSAT_IRIDIUM_BOOTED_PIN) == LOW) {
+            // The modem shut itself down (its supply went under the floor): wait for it, nothing toggled.
+            closeUart();
+            stat.modemAnswered = false;
+            modemPoweredMs = now;
+            modemPowerState = IridiumModemPower::Starting;
+            LOG_WARN("MeshSat Iridium: I_BTD low, the modem shut down; waiting for it");
+            return;
+        }
+#endif
+        if (stat.modemAnswered) {
+            probeAwaiting = false;
+            probeMisses = 0;
+            if (!uartOpen)
+                openUart();
+            return;
+        }
+        if (clientOn) {
+            // The client's own traffic confirms the modem; the pipe sends nothing of its own.
+            if (!uartOpen)
+                openUart();
+            return;
+        }
+        if (probeAwaiting) {
+            if (!Throttle::hasElapsed(probeSentMs, PROBE_REPLY_MS))
+                return;
+            probeAwaiting = false;
+            probeMisses++;
+            closeUart();
+            if (probeMisses >= PROBE_MISSES_TO_FAULT) {
+                modemPowerState = IridiumModemPower::Fault;
+                LOG_ERROR("MeshSat Iridium: no answer to %u probes; supply left on, no power cycle, fault latched until a "
+                          "client gets an answer or a reboot",
+                          static_cast<unsigned>(probeMisses));
+            } else {
+                probeIntervalMs = probeIntervalMs * 2 > PROBE_INTERVAL_MAX_MS ? PROBE_INTERVAL_MAX_MS : probeIntervalMs * 2;
+                LOG_WARN("MeshSat Iridium: no answer to probe %u of %u, next in %u s", static_cast<unsigned>(probeMisses),
+                         static_cast<unsigned>(PROBE_MISSES_TO_FAULT), static_cast<unsigned>(probeIntervalMs / 1000));
+            }
+            return;
+        }
+        if (Throttle::hasElapsed(lastProbeMs, probeIntervalMs))
+            sendProbe(now);
+        return;
+    case IridiumModemPower::Fault:
+        if (stopWanted) {
+            stopModem("cell under the off-threshold while in fault");
+            return;
+        }
+        if (stat.modemAnswered) {
+            modemPowerState = IridiumModemPower::Running;
+            probeMisses = 0;
+            LOG_INFO("MeshSat Iridium: fault cleared, the modem answered");
+            return;
+        }
+        // A client may try on its own; an answer clears the fault.
+        if (clientOn && !uartOpen)
+            openUart();
+        return;
+    }
+}
+#else
+IridiumModemPower IridiumPipe::modemPower() const
+{
+    return IridiumModemPower::Running;
+}
+#endif
 
 int IridiumPipe::prepareDeepSleep(void *unused)
 {
@@ -521,10 +748,11 @@ int32_t IridiumPipe::runOnce()
         discardPhoneBytes();
 
 #if MESHSAT_IRIDIUM_JSPR
+    runModemPower(millis());
     if (!uartOpen) {
-        if (!Throttle::hasElapsed(modemPoweredMs, JSPR_BOOT_WAIT_MS))
-            return IDLE_INTERVAL_MS;
-        openUart();
+        // Supply off, start unconfirmed, or between probes: a client's bytes have nowhere to go.
+        discardPhoneBytes();
+        return IDLE_INTERVAL_MS;
     }
 #endif
 

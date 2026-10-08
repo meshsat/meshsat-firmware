@@ -21,6 +21,18 @@ enum class IridiumModemOwner : uint8_t {
     Node,
 };
 
+// The modem's supply and readiness, owned by the pipe in the 9704 build (the 9603 build is always Running).
+enum class IridiumModemPower : uint8_t {
+    // Supply off: the cell is under the off-threshold, or the minimum off interval runs.
+    Inhibited,
+    // Supply on, boot not confirmed: inputs stay high-impedance until the guard or I_BTD says booted.
+    Starting,
+    // Supply on and the UART open; a JSPR reply has been seen, or a client is on the pipe.
+    Running,
+    // Supply on, no reply to any probe: latched, never power-cycled, until a client gets an answer or a reboot.
+    Fault,
+};
+
 // What the pipe has seen pass on the serial line, for the screen and the apps. Written from
 // runOnce() only; a reader on another thread gets a copy that may be one field behind.
 struct IridiumStats {
@@ -111,6 +123,7 @@ class IridiumPipe : private concurrency::OSThread
     static IridiumPipe *instance();
 
     IridiumModemOwner owner() const { return currentOwner.load(); }
+    IridiumModemPower modemPower() const;
     bool sessionInFlight() const { return sessionInFlightFlag.load(); }
     const IridiumStats &stats() const { return stat; }
 
@@ -191,7 +204,24 @@ class IridiumPipe : private concurrency::OSThread
 
     bool uartOpen = false;
 #if MESHSAT_IRIDIUM_JSPR
+    // The supply state machine (MESHSAT-1507): cell eligibility before the rail, a guard from the enable,
+    // probes without power cycles, a latched fault.
+    IridiumModemPower modemPowerState = IridiumModemPower::Inhibited;
     uint32_t modemPoweredMs = 0;
+    uint32_t modemOffMs = 0;
+    uint32_t lastCellSampleMs = 0;
+    uint8_t cellOkSamples = 0;
+    uint8_t cellLowSamples = 0;
+    bool probeAwaiting = false;
+    uint32_t probeSentMs = 0;
+    uint32_t lastProbeMs = 0;
+    uint32_t probeIntervalMs = 0;
+    uint32_t probeMisses = 0;
+    void sampleCell(uint32_t now);
+    void runModemPower(uint32_t now);
+    void startModem(uint32_t now, bool railAlreadyOn);
+    void stopModem(const char *why);
+    void sendProbe(uint32_t now);
 #endif
 
     // Modem health while unowned.
