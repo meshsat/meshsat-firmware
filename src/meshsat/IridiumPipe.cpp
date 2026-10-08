@@ -7,6 +7,7 @@
 #include "mesh/Throttle.h"
 #include "meshsat/BleWatchdog.h"
 #include "meshsat/DownReason.h"
+#include "meshsat/IridiumImtModule.h"
 #include "meshsat/IridiumModule.h"
 #include "sleep.h"
 
@@ -630,6 +631,14 @@ void IridiumPipe::publishStats()
     put32(out, at, stat.phoneBytesDropped);
     uint32_t nodeSessions = 0, nodeSent = 0, nodeReceived = 0;
     uint8_t dayUsed = 0, dayCap = 0;
+#if MESHSAT_IRIDIUM_JSPR
+    // IMT has no sessions or daily cap: the attempts with a final status stand in for sessions.
+    if (iridiumImtModule) {
+        nodeSent = iridiumImtModule->sentAsNodeCount();
+        nodeReceived = iridiumImtModule->receivedAsNodeCount();
+        nodeSessions = nodeSent + iridiumImtModule->failedAsNodeCount();
+    }
+#else
     if (iridiumModule) {
         nodeSessions = iridiumModule->sessionsAsNodeCount();
         nodeSent = iridiumModule->sentAsNodeCount();
@@ -637,6 +646,7 @@ void IridiumPipe::publishStats()
         dayUsed = iridiumModule->daySessionsUsed();
         dayCap = iridiumModule->daySessionsCap();
     }
+#endif
     put32(out, at, nodeSessions);
     put32(out, at, nodeSent);
     put32(out, at, nodeReceived);
@@ -666,6 +676,12 @@ void IridiumPipe::publishStats()
 }
 
 // PASS, contract v2: [01][n][n x (u32 startEpochS, u16 durationS, u8 maxElevationDeg)], little-endian.
+void IridiumPipe::noteSignal(int bars)
+{
+    stat.lastCsq = bars;
+    stat.lastCsqMs = millis();
+}
+
 void IridiumPipe::onPassWrite(const uint8_t *data, size_t length)
 {
     if (!data || length < 2 || data[0] != 1)

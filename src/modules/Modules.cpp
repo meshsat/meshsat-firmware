@@ -1,6 +1,7 @@
 #include "configuration.h"
 #if MESHSAT_IRIDIUM
 #include "meshsat/BleWatchdog.h"
+#include "meshsat/IridiumImtModule.h"
 #include "meshsat/IridiumModule.h"
 #include "meshsat/IridiumPipe.h"
 #include "meshsat/IridiumStatusModule.h"
@@ -132,7 +133,9 @@ void setupModules()
     IridiumPipe::begin();
     BleWatchdog::begin();
     new IridiumStatusModule();
-#if !MESHSAT_IRIDIUM_JSPR
+#if MESHSAT_IRIDIUM_JSPR
+    new IridiumImtModule();
+#else
     new IridiumModule();
 #endif
 #endif
