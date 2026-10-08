@@ -145,7 +145,14 @@ void drawHomeScreen(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, 
     drawSignalBars(display, right - ownerW - 24, line1 + FONT_HEIGHT_SMALL - 2, csqFresh ? (st.lastCsq > 5 ? 5 : st.lastCsq) : 0);
 
     // Line 2, the one big thing: the satellite state in a few words.
-    if (!st.modemAnswered) {
+    const IridiumModemPower power = pipe->modemPower();
+    if (power == IridiumModemPower::Inhibited) {
+        snprintf(text, sizeof(text), "Modem off: cell low");
+    } else if (power == IridiumModemPower::Starting) {
+        snprintf(text, sizeof(text), "Modem starting");
+    } else if (power == IridiumModemPower::Fault) {
+        snprintf(text, sizeof(text), "Modem fault");
+    } else if (!st.modemAnswered) {
         snprintf(text, sizeof(text), "Modem silent");
     } else if (st.sessionInFlight) {
         snprintf(text, sizeof(text), "Session...");
@@ -188,7 +195,14 @@ void drawHomeSatelliteRow(OLEDDisplay *display, int16_t x, int16_t y)
         else if (pipe->owner() == IridiumModemOwner::Node)
             ownerWord = "node";
         const uint32_t now = millis();
-        if (!st.modemAnswered) {
+        const IridiumModemPower power = pipe->modemPower();
+        if (power == IridiumModemPower::Inhibited) {
+            snprintf(text, sizeof(text), "Sat: modem off, cell low");
+        } else if (power == IridiumModemPower::Starting) {
+            snprintf(text, sizeof(text), "Sat: modem starting");
+        } else if (power == IridiumModemPower::Fault) {
+            snprintf(text, sizeof(text), "Sat: modem fault");
+        } else if (!st.modemAnswered) {
             snprintf(text, sizeof(text), "Sat: %s, modem silent", ownerWord);
         } else if (st.sessionInFlight) {
             snprintf(text, sizeof(text), "Sat: %s, session...", ownerWord);
