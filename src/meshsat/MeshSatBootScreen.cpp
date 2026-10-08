@@ -83,7 +83,8 @@ void drawBootScreen(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, 
     const int16_t lineY = y + display->getHeight() - FONT_HEIGHT_SMALL;
     if (myRegion && myRegion->name)
         display->drawString(x + 2, lineY, myRegion->name);
-    const char *version = xstr(APP_VERSION_SHORT);
+    // The full build string, with the commit, so a flash is recognisable on the screen.
+    const char *version = xstr(APP_VERSION);
     display->drawString(x + display->getWidth() - display->getStringWidth(version) - 2, lineY, version);
 
     if (screen)
