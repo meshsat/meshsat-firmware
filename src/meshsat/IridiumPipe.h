@@ -116,6 +116,8 @@ class IridiumPipe : private concurrency::OSThread
     size_t passWindowCount() const { return passCount; }
     const PassWindow &passWindow(size_t index) const { return passWindows[index]; }
     void onPassWrite(const uint8_t *data, size_t length);
+    // Signal bars from a JSPR constellationState event, for the screen and the apps; never a send gate.
+    void noteSignal(int bars);
 
     static void begin();
     // Called from NimbleBluetooth::setupService(), which re-runs on every BLE re-enable.
