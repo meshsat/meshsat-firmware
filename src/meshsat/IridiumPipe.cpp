@@ -592,6 +592,10 @@ uint8_t IridiumPipe::statusFlags() const
         flags |= 0x04;
     if (incoming && xStreamBufferBytesAvailable(incoming) > INCOMING_BYTES * 3 / 4)
         flags |= 0x08;
+#if MESHSAT_IRIDIUM_JSPR
+    // Bit 4: the modem speaks JSPR, a RockBLOCK 9704, so a client picks its driver without being told (8 Oct 2026).
+    flags |= 0x10;
+#endif
     return flags;
 }
 
