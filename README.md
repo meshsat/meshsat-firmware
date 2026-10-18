@@ -80,7 +80,7 @@ Then set it up like any Meshtastic node: region, owner name and a fixed Bluetoot
 
 ## Following upstream
 
-`main` is the upstream tag `v2.8.0.47db0e3` with the MeshSat commits on top. Upstream releases come in by merge, never by rewriting history, so every MeshSat change stays a readable commit on top of a Meshtastic release. Upstream's contributor guides (`CLAUDE.md`, `AGENTS.md`, `.github/copilot-instructions.md`) are theirs and apply here unchanged. Issues with the Meshtastic firmware itself belong upstream.
+`main` is the upstream tag `v2.8.0.47db0e3` with the MeshSat commits on top. Upstream releases come in by merge, never by rewriting history, so every MeshSat change stays a readable commit on top of a Meshtastic release. Upstream's contributor guides (`AGENTS.md`, `.github/copilot-instructions.md`) are theirs and apply here unchanged. Issues with the Meshtastic firmware itself belong upstream.
 
 ## Related projects
 
