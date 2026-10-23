@@ -151,7 +151,8 @@ class IridiumPipe : private concurrency::OSThread
   private:
     IridiumPipe();
 
-    // Switches the modem supply where the board has one (MESHSAT_IRIDIUM_DCDC5_MV); otherwise a no-op.
+    // Starts or stops the modem: through its enable input where I_EN is wired (MESHSAT_IRIDIUM_ENABLE_PIN, the
+    // cell on V_BATT), through the supply rail where the board has one (MESHSAT_IRIDIUM_DCDC5_MV); otherwise a no-op.
     void powerModem(bool on);
     void openUart();
     void closeUart();
@@ -224,6 +225,19 @@ class IridiumPipe : private concurrency::OSThread
     void startModem(uint32_t now, bool railAlreadyOn);
     void stopModem(const char *why);
     void sendProbe(uint32_t now);
+#ifdef MESHSAT_IRIDIUM_BOOTED_PIN
+    // The cell asked for a stop while the start was unconfirmed: the stop waits for I_BTD high first
+    // (Ground Control: once I_EN is high it stays high until I_BTD has gone high).
+    bool stopAfterBoot = false;
+#endif
+#ifdef MESHSAT_IRIDIUM_ENABLE_PIN
+    // I_EN is low and I_BTD has not confirmed the shutdown yet: I_EN stays low until it does.
+    bool shutdownPending = false;
+    uint32_t shutdownCommandedMs = 0;
+    uint32_t lastShutdownWarnMs = 0;
+    // The shutdown check at boot: resumes the phase the firmware was in before the reset.
+    void resumeEnableAtBoot(uint32_t now);
+#endif
 #endif
 
     // Modem health while unowned.

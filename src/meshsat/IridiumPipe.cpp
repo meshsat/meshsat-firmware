@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <driver/gpio.h>
+#include <esp_attr.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/stream_buffer.h>
 #include <host/ble_store.h>
@@ -58,6 +59,23 @@ static constexpr uint32_t PROBE_MISSES_TO_FAULT = 5;
 #ifdef MESHSAT_IRIDIUM_BOOTED_PIN
 // With I_BTD wired, a start that never reads booted within this time is a fault.
 static constexpr uint32_t BOOTED_WAIT_MAX_MS = 3 * JSPR_BOOT_WAIT_MS;
+#endif
+#ifdef MESHSAT_IRIDIUM_ENABLE_PIN
+// After I_EN goes low the 9704 shuts down on its supercapacitors and I_BTD low confirms it. A shutdown that is
+// not confirmed is logged at this interval, and I_EN stays low (Ground Control: never high again before I_BTD is low).
+static constexpr uint32_t SHUTDOWN_WARN_MS = 5 * 60 * 1000UL;
+// The level last commanded on I_EN, kept across a warm reset (software, panic, watchdog) so the boot knows the
+// modem's phase. A power-on or brownout reset clears it, and then the 9704's own pull-up has started the modem.
+// The pad itself is held through a reset (gpio_hold_en), so the modem sees no edge while the MCU restarts.
+struct IridiumEnableMemory {
+    uint32_t magic;
+    uint8_t level;
+};
+static constexpr uint32_t ENABLE_MEMORY_MAGIC = 0x49454E31; // "IEN1"
+static RTC_NOINIT_ATTR IridiumEnableMemory enableMemory;
+#ifndef MESHSAT_IRIDIUM_BOOTED_PIN
+#error "MESHSAT_IRIDIUM_ENABLE_PIN without MESHSAT_IRIDIUM_BOOTED_PIN: Ground Control's sequence needs I_BTD"
+#endif
 #endif
 #else
 static constexpr size_t UART_RX_BUFFER_BYTES = 1024;
@@ -184,6 +202,10 @@ void IridiumPipe::begin()
 #ifdef MESHSAT_IRIDIUM_BOOTED_PIN
     pinMode(MESHSAT_IRIDIUM_BOOTED_PIN, INPUT);
 #endif
+#ifdef MESHSAT_IRIDIUM_ENABLE_PIN
+    // The cell is on V_BATT and I_EN is the switch: the shutdown check decides from the phase before the reset.
+    pipeInstance->resumeEnableAtBoot(millis());
+#else
     // A warm reboot keeps the rail on and the modem may be mid-start: the guard runs again, nothing is toggled.
     bool railOn = false;
 #ifdef MESHSAT_IRIDIUM_DCDC5_MV
@@ -194,6 +216,7 @@ void IridiumPipe::begin()
     else
         LOG_INFO("MeshSat Iridium: modem supply off at boot; on once the cell allows it (on at %d mV, off at %d mV)",
                  MESHSAT_IRIDIUM_CELL_ON_MV, MESHSAT_IRIDIUM_CELL_OFF_MV);
+#endif
 #else
     pipeInstance->powerModem(true);
     pipeInstance->openUart();
@@ -301,7 +324,35 @@ void IridiumPipe::closeUart()
 
 void IridiumPipe::powerModem(bool on)
 {
-#ifdef MESHSAT_IRIDIUM_DCDC5_MV
+#if defined(MESHSAT_IRIDIUM_ENABLE_PIN)
+    // Ground Control's switch: I_EN high starts the 9704, I_EN low starts its shutdown; the cell stays on V_BATT.
+    // The level and the direction are written first and take over the moment the hold is released, so the pad
+    // never floats (floating, the 9704's own pull-up reads as high); then it is held again through any reset.
+    // ESP-IDF calls, not Arduino's: the output register is written before the output is enabled, so a first
+    // configuration after a power-on reset never pulses the pin low.
+    const gpio_num_t pin = static_cast<gpio_num_t>(MESHSAT_IRIDIUM_ENABLE_PIN);
+    gpio_set_level(pin, on ? 1 : 0);
+    gpio_config_t conf = {};
+    conf.pin_bit_mask = 1ULL << MESHSAT_IRIDIUM_ENABLE_PIN;
+    conf.mode = GPIO_MODE_OUTPUT;
+    conf.pull_up_en = GPIO_PULLUP_DISABLE;
+    conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    conf.intr_type = GPIO_INTR_DISABLE;
+    gpio_config(&conf);
+    gpio_hold_dis(pin);
+    gpio_hold_en(pin);
+    enableMemory.level = on ? 1 : 0;
+    enableMemory.magic = ENABLE_MEMORY_MAGIC;
+#if MESHSAT_IRIDIUM_JSPR
+    // The guard and the minimum off interval count from the switch, not from boot.
+    if (on)
+        modemPoweredMs = millis();
+    else
+        modemOffMs = millis();
+#endif
+    LOG_INFO("MeshSat Iridium: I_EN %s (GPIO%d), the modem %s on the cell", on ? "high" : "low", MESHSAT_IRIDIUM_ENABLE_PIN,
+             on ? "starts" : "shuts down");
+#elif defined(MESHSAT_IRIDIUM_DCDC5_MV)
     if (!PMU) {
         LOG_WARN("MeshSat Iridium: no PMU, modem supply unchanged");
         return;
@@ -357,7 +408,7 @@ void IridiumPipe::startModem(uint32_t now, bool railAlreadyOn)
     pinMode(MESHSAT_IRIDIUM_RX_PIN, INPUT);
     if (railAlreadyOn) {
         modemPoweredMs = now;
-        LOG_INFO("MeshSat Iridium: modem supply already on at boot; it may be mid-start, guard restarted, nothing toggled");
+        LOG_INFO("MeshSat Iridium: modem already on at boot; it may be mid-start, guard restarted, nothing toggled");
     } else {
         powerModem(true);
     }
@@ -366,6 +417,9 @@ void IridiumPipe::startModem(uint32_t now, bool railAlreadyOn)
     probeAwaiting = false;
     probeMisses = 0;
     probeIntervalMs = PROBE_INTERVAL_MIN_MS;
+#ifdef MESHSAT_IRIDIUM_BOOTED_PIN
+    stopAfterBoot = false;
+#endif
 }
 
 void IridiumPipe::stopModem(const char *why)
@@ -378,9 +432,49 @@ void IridiumPipe::stopModem(const char *why)
     stat.modemAnswered = false;
     probeAwaiting = false;
     cellOkSamples = 0;
-    LOG_WARN("MeshSat Iridium: modem supply off: %s", why);
+#ifdef MESHSAT_IRIDIUM_BOOTED_PIN
+    stopAfterBoot = false;
+#endif
+#ifdef MESHSAT_IRIDIUM_ENABLE_PIN
+    // I_EN stays low until I_BTD reads low: the modem finishes its shutdown on its supercapacitors.
+    shutdownPending = true;
+    shutdownCommandedMs = millis();
+    lastShutdownWarnMs = shutdownCommandedMs;
+#endif
+    LOG_WARN("MeshSat Iridium: modem stop: %s", why);
     (void)why;
 }
+
+#ifdef MESHSAT_IRIDIUM_ENABLE_PIN
+void IridiumPipe::resumeEnableAtBoot(uint32_t now)
+{
+    // The shutdown check (CE technical file, section 2): after a reset the modem's phase is not known from I_BTD
+    // alone, since it is low while starting as well as when off. The level last commanded on I_EN is kept in RTC
+    // memory and the pad was held through the reset; a power-on or brownout reset has neither, and then the
+    // 9704's own pull-up has already started the modem. Nothing is toggled here: a start runs to I_BTD high and
+    // a shutdown runs to I_BTD low, as Ground Control's cycle rule asks.
+    const bool booted = digitalRead(MESHSAT_IRIDIUM_BOOTED_PIN) == HIGH;
+    const bool remembered = enableMemory.magic == ENABLE_MEMORY_MAGIC;
+    LOG_INFO("MeshSat Iridium: the cell feeds the modem on V_BATT; it is shut down under %d mV and started above %d mV",
+             MESHSAT_IRIDIUM_CELL_OFF_MV, MESHSAT_IRIDIUM_CELL_ON_MV);
+    if (remembered && enableMemory.level == 0) {
+        powerModem(false);
+        modemPowerState = IridiumModemPower::Inhibited;
+        modemOffMs = now;
+        shutdownPending = booted;
+        shutdownCommandedMs = now;
+        lastShutdownWarnMs = now;
+        LOG_INFO("MeshSat Iridium: shutdown check at boot: I_EN was low before the reset and stays low; I_BTD %s",
+                 booted ? "still high, waiting for the modem to finish shutting down" : "low, the modem is off");
+        return;
+    }
+    powerModem(true);
+    startModem(now, true);
+    LOG_INFO("MeshSat Iridium: shutdown check at boot: %s; I_EN high, I_BTD %s",
+             remembered ? "I_EN was high before the reset" : "power-on or brownout reset, the 9704 started on its own pull-up",
+             booted ? "high, the modem has booted" : "low, the modem is starting");
+}
+#endif
 
 void IridiumPipe::sendProbe(uint32_t now)
 {
@@ -401,26 +495,64 @@ void IridiumPipe::runModemPower(uint32_t now)
     const bool clientOn = currentOwner.load() != IridiumModemOwner::None;
     switch (modemPowerState) {
     case IridiumModemPower::Inhibited:
+#ifdef MESHSAT_IRIDIUM_ENABLE_PIN
+        if (shutdownPending) {
+            if (digitalRead(MESHSAT_IRIDIUM_BOOTED_PIN) == LOW) {
+                shutdownPending = false;
+                // The minimum off interval counts from the confirmed shutdown.
+                modemOffMs = now;
+                LOG_INFO("MeshSat Iridium: I_BTD low, the modem has shut down (%u s after I_EN went low)",
+                         static_cast<unsigned>((now - shutdownCommandedMs) / 1000));
+            } else {
+                if (Throttle::hasElapsed(lastShutdownWarnMs, SHUTDOWN_WARN_MS)) {
+                    lastShutdownWarnMs = now;
+                    LOG_WARN("MeshSat Iridium: I_BTD still high %u s after I_EN went low; I_EN stays low until it drops",
+                             static_cast<unsigned>((now - shutdownCommandedMs) / 1000));
+                }
+                return;
+            }
+        }
+#endif
         if (modemOffMs != 0 && !Throttle::hasElapsed(modemOffMs, MIN_OFF_MS))
             return;
         if (cellOkSamples >= CELL_OK_SAMPLES)
             startModem(now, false);
         return;
     case IridiumModemPower::Starting:
-        if (stopWanted) {
+#ifdef MESHSAT_IRIDIUM_BOOTED_PIN
+        if (stopWanted && !stopAfterBoot) {
+#ifdef MESHSAT_IRIDIUM_ENABLE_PIN
+            // Never flip I_EN before I_BTD has confirmed the start (Ground Control): the stop waits for it.
+            stopAfterBoot = true;
+            LOG_WARN("MeshSat Iridium: cell under the off-threshold while the modem starts; I_EN stays high until I_BTD "
+                     "confirms the start, then the modem is shut down");
+#else
             stopModem("cell under the off-threshold while starting");
             return;
+#endif
         }
-#ifdef MESHSAT_IRIDIUM_BOOTED_PIN
         if (digitalRead(MESHSAT_IRIDIUM_BOOTED_PIN) == HIGH) {
+            if (stopAfterBoot) {
+                stopModem("cell under the off-threshold; the start completed first");
+                return;
+            }
             openUart();
             modemPowerState = IridiumModemPower::Running;
             LOG_INFO("MeshSat Iridium: I_BTD high, the modem has booted");
         } else if (Throttle::hasElapsed(modemPoweredMs, BOOTED_WAIT_MAX_MS)) {
+            if (stopAfterBoot) {
+                // The start never completed, so the cycle rule has nothing to wait for; a low cell wins.
+                stopModem("cell under the off-threshold and I_BTD never went high");
+                return;
+            }
             modemPowerState = IridiumModemPower::Fault;
             LOG_ERROR("MeshSat Iridium: I_BTD never went high; supply left on, no power cycle, fault latched");
         }
 #else
+        if (stopWanted) {
+            stopModem("cell under the off-threshold while starting");
+            return;
+        }
         // Four wires: nothing says booted. After the guard, one probe into a modem whose start is unobserved.
         if (Throttle::hasElapsed(modemPoweredMs, JSPR_BOOT_WAIT_MS)) {
             modemPowerState = IridiumModemPower::Running;
@@ -511,6 +643,10 @@ int IridiumPipe::prepareDeepSleep(void *unused)
     meshsat::noteDeepSleep();
     closeUart();
     powerModem(false);
+#ifdef MESHSAT_IRIDIUM_ENABLE_PIN
+    // The held low on I_EN must survive deep sleep too, or the 9704's pull-up restarts the modem while the node sleeps.
+    gpio_deep_sleep_hold_en();
+#endif
     return 0;
 }
 
