@@ -135,11 +135,13 @@ void drawHomeScreen(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, 
     }
     const IridiumStats &st = pipe->stats();
 
+    // Who holds the modem, in the words of what it does: "app" while a phone drives it, "mesh" while the node
+    // routes its satellite channel on its own, "free" in between.
     const char *ownerWord = "free";
     if (pipe->owner() == IridiumModemOwner::Phone)
-        ownerWord = "phone";
+        ownerWord = "app";
     else if (pipe->owner() == IridiumModemOwner::Node)
-        ownerWord = "node";
+        ownerWord = "mesh";
     const int16_t ownerW = display->getStringWidth(ownerWord);
     display->drawString(right - ownerW, line1, ownerWord);
     const bool csqFresh = st.lastCsq >= 0 && !Throttle::hasElapsed(st.lastCsqMs, 30 * 60 * 1000UL);
@@ -160,7 +162,13 @@ void drawHomeScreen(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, 
     } else if (st.ringPending) {
         snprintf(text, sizeof(text), "Msg waiting");
     } else if (st.lastSessionMs == 0) {
-        snprintf(text, sizeof(text), "Ready");
+        // Ready for what: a phone's traffic (App mode) or the node's own routing of the satellite channel (Mesh mode).
+        if (pipe->owner() == IridiumModemOwner::Phone)
+            snprintf(text, sizeof(text), "App mode");
+        else if (pipe->owner() == IridiumModemOwner::Node)
+            snprintf(text, sizeof(text), "Mesh mode");
+        else
+            snprintf(text, sizeof(text), "Ready");
     } else {
         formatAge(age, sizeof(age), now - st.lastSessionMs);
         if (st.lastMoStatus >= 0 && st.lastMoStatus <= 4) {
@@ -192,9 +200,9 @@ void drawHomeSatelliteRow(OLEDDisplay *display, int16_t x, int16_t y)
         const IridiumStats &st = pipe->stats();
         const char *ownerWord = "free";
         if (pipe->owner() == IridiumModemOwner::Phone)
-            ownerWord = "phone";
+            ownerWord = "app";
         else if (pipe->owner() == IridiumModemOwner::Node)
-            ownerWord = "node";
+            ownerWord = "mesh";
         const uint32_t now = millis();
         const IridiumModemPower power = pipe->modemPower();
         if (power == IridiumModemPower::Inhibited) {
