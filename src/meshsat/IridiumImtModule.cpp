@@ -25,7 +25,9 @@ static constexpr uint32_t SEGMENT_WAIT_MS = 5 * 1000UL;
 static constexpr uint32_t ATTEMPT_GAP_MS = 60 * 1000UL;
 static constexpr uint8_t ATTEMPTS_MAX = 5;
 static constexpr uint32_t QUEUE_MAX_AGE_MS = 30 * 60 * 1000UL;
-// A client that just dropped, or one about to connect after a boot, is first in line.
+// A client that just dropped is first in line, and so is one about to connect after a boot where nothing
+// else says when the modem is ready. With I_BTD wired the pipe knows that from the pin, so the node takes
+// the modem the moment the pipe has heard it; a client that connects then gets it between requests.
 static constexpr uint32_t PHONE_GRACE_MS = 60 * 1000UL;
 static constexpr uint8_t INIT_RETRIES = 3;
 
@@ -224,7 +226,12 @@ void IridiumImtModule::takeOrReleaseModem()
         if (pipe->modemPower() != IridiumModemPower::Running || !pipe->stats().modemAnswered)
             return;
         const uint32_t lastRelease = pipe->stats().lastPhoneReleaseMs;
-        if (!Throttle::hasElapsed(0, PHONE_GRACE_MS) || (lastRelease != 0 && !Throttle::hasElapsed(lastRelease, PHONE_GRACE_MS)))
+#ifdef MESHSAT_IRIDIUM_BOOTED_PIN
+        const bool bootGrace = false;
+#else
+        const bool bootGrace = !Throttle::hasElapsed(0, PHONE_GRACE_MS);
+#endif
+        if (bootGrace || (lastRelease != 0 && !Throttle::hasElapsed(lastRelease, PHONE_GRACE_MS)))
             return;
         if (!pipe->tryAcquireForNode())
             return;
