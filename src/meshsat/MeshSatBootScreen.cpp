@@ -163,12 +163,14 @@ void drawHomeScreen(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, 
         snprintf(text, sizeof(text), "Msg waiting");
     } else if (st.lastSessionMs == 0) {
         // Ready for what: a phone's traffic (App mode) or the node's own routing of the satellite channel (Mesh mode).
+        // Nobody holding the modem is a change of hands under way (the minute after a phone lets go before the
+        // node takes it, or a phone about to claim it), not a third mode (owner, 24 Oct 2026).
         if (pipe->owner() == IridiumModemOwner::Phone)
             snprintf(text, sizeof(text), "App mode");
         else if (pipe->owner() == IridiumModemOwner::Node)
             snprintf(text, sizeof(text), "Mesh mode");
         else
-            snprintf(text, sizeof(text), "Ready");
+            snprintf(text, sizeof(text), "Changing mode");
     } else {
         formatAge(age, sizeof(age), now - st.lastSessionMs);
         if (st.lastMoStatus >= 0 && st.lastMoStatus <= 4) {
@@ -218,7 +220,8 @@ void drawHomeSatelliteRow(OLEDDisplay *display, int16_t x, int16_t y)
         } else if (st.ringPending) {
             snprintf(text, sizeof(text), "Sat: %s, msg waiting", ownerWord);
         } else if (st.lastSessionMs == 0) {
-            snprintf(text, sizeof(text), "Sat: %s, ready", ownerWord);
+            snprintf(text, sizeof(text), pipe->owner() == IridiumModemOwner::None ? "Sat: %s, changing mode" : "Sat: %s, ready",
+                     ownerWord);
         } else {
             formatAge(age, sizeof(age), now - st.lastSessionMs);
             if (st.lastMoStatus >= 0 && st.lastMoStatus <= 4)
