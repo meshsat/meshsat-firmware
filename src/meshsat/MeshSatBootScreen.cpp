@@ -163,8 +163,12 @@ void drawHomeScreen(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, 
 
     // Line 2, the one big thing: the satellite state in a few words.
     const IridiumModemPower power = pipe->modemPower();
-    if (power == IridiumModemPower::Inhibited) {
-        snprintf(text, sizeof(text), "Modem off: cell low");
+    // With the panel button in use (MESHSAT-1667) the modem is off while disarmed, not for a low cell.
+    const bool buttonInUse = pipe->panelButtonActive();
+    if (buttonInUse && !pipe->satelliteArmed()) {
+        snprintf(text, sizeof(text), "%s", power == IridiumModemPower::Inhibited ? "Disarmed" : "Disarming");
+    } else if (power == IridiumModemPower::Inhibited) {
+        snprintf(text, sizeof(text), "%s", buttonInUse ? "Armed, starting" : "Modem off: cell low");
     } else if (power == IridiumModemPower::Starting) {
         snprintf(text, sizeof(text), "Modem starting");
     } else if (power == IridiumModemPower::Fault) {

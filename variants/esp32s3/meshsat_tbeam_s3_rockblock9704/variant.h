@@ -23,3 +23,8 @@
 // the modem's pin 12 under the charge-up load (CE technical file test P1) still has to confirm them.
 #define MESHSAT_IRIDIUM_CELL_ON_MV 3750
 #define MESHSAT_IRIDIUM_CELL_OFF_MV 3650
+
+// The panel push button (CE technical file section 4.1: PN1 pin 8 to GND, internal pull-up), MESHSAT-1667. The
+// press edge arms the satellite; a latching switch's release disarms it, a momentary switch's second press does.
+// Inactive until the first press this unit has seen (kept in NVS): with no button wired the modem runs as before.
+#define MESHSAT_PANEL_BUTTON_PIN 38

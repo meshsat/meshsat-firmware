@@ -60,6 +60,7 @@ class IridiumStatusModule : public MeshModule, private concurrency::OSThread
 
     uint32_t seenSessionMs = 0;
     uint32_t seenRingMs = 0;
+    uint32_t seenArmEventMs = 0;
     bool seenModemAnswered = false;
     bool lastStopShown = false;
 

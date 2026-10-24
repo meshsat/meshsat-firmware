@@ -234,6 +234,9 @@ void IridiumPipe::begin()
 #ifdef MESHSAT_IRIDIUM_ENABLE_PIN
     // The cell is on V_BATT and I_EN is the switch: the shutdown check decides from the phase before the reset.
     pipeInstance->resumeEnableAtBoot(millis());
+#ifdef MESHSAT_PANEL_BUTTON_PIN
+    pipeInstance->restoreArming(millis());
+#endif
 #else
     // A warm reboot keeps the rail on and the modem may be mid-start: the guard runs again, nothing is toggled.
     bool railOn = false;
@@ -418,6 +421,105 @@ IridiumModemPower IridiumPipe::modemPower() const
     return modemPowerState;
 }
 
+#if defined(MESHSAT_PANEL_BUTTON_PIN) && defined(MESHSAT_IRIDIUM_ENABLE_PIN)
+static constexpr const char *NVS_BUTTON_SEEN = "btnSeen";
+static constexpr const char *NVS_BUTTON_KIND = "btnKind";
+
+bool IridiumPipe::panelButtonActive() const
+{
+    return arming.active();
+}
+
+bool IridiumPipe::satelliteArmed() const
+{
+    return arming.armed();
+}
+
+void IridiumPipe::restoreArming(uint32_t now)
+{
+    pinMode(MESHSAT_PANEL_BUTTON_PIN, INPUT_PULLUP);
+    bool seen = false;
+    uint8_t kind = 0;
+    Preferences prefs;
+    if (prefs.begin("meshsat", true)) {
+        seen = prefs.getBool(NVS_BUTTON_SEEN, false);
+        kind = prefs.getUChar(NVS_BUTTON_KIND, 0);
+        prefs.end();
+    }
+    const meshsat::SwitchKind switchKind = kind == 1 ? meshsat::SwitchKind::Latching : meshsat::SwitchKind::Unknown;
+    const bool pressed = digitalRead(MESHSAT_PANEL_BUTTON_PIN) == LOW;
+    arming.restore(now, seen, switchKind, pressed);
+    if (!seen)
+        LOG_INFO("MeshSat panel button: GPIO%d never pressed on this unit, the modem runs without arming",
+                 MESHSAT_PANEL_BUTTON_PIN);
+    else
+        LOG_INFO("MeshSat panel button: GPIO%d, %s switch, %s; disarmed after the reset%s", MESHSAT_PANEL_BUTTON_PIN,
+                 switchKind == meshsat::SwitchKind::Latching ? "latching" : "momentary", pressed ? "pressed" : "released",
+                 pressed && switchKind == meshsat::SwitchKind::Latching ? ", release and press it to arm" : "");
+}
+
+bool IridiumPipe::cellAllowsArming() const
+{
+    // The arming threshold is the supply's on-threshold (R13: arming refused below about 3,75 V); USB always allows it.
+    if (powerStatus && powerStatus->getHasUSB())
+        return true;
+    return powerStatus && powerStatus->getHasBattery() && powerStatus->getBatteryVoltageMv() >= MESHSAT_IRIDIUM_CELL_ON_MV;
+}
+
+void IridiumPipe::noteArmEvent(meshsat::ArmEvent ev, uint32_t now)
+{
+    if (ev == meshsat::ArmEvent::None)
+        return;
+    stat.armEvent = static_cast<uint8_t>(ev);
+    stat.armEventMs = now == 0 ? 1 : now;
+    switch (ev) {
+    case meshsat::ArmEvent::Armed:
+        LOG_INFO("MeshSat panel button: satellite armed; disarms after 15 min without satellite traffic, 30 min at most");
+        break;
+    case meshsat::ArmEvent::RefusedCellLow:
+        LOG_WARN("MeshSat panel button: not armed, the cell is under %d mV", MESHSAT_IRIDIUM_CELL_ON_MV);
+        break;
+    case meshsat::ArmEvent::LatchingDetected:
+        LOG_INFO("MeshSat panel button: held down 10 s, a latching switch: in = armed, out = disarmed from now on");
+        break;
+    default:
+        LOG_INFO("MeshSat panel button: %s", meshsat::armEventText(ev));
+        break;
+    }
+}
+
+void IridiumPipe::runArming(uint32_t now)
+{
+    const bool pressed = digitalRead(MESHSAT_PANEL_BUTTON_PIN) == LOW;
+    const meshsat::ArmEvent ev = arming.update(now, pressed, cellAllowsArming());
+    uint32_t heldMs = 0;
+    const meshsat::SatelliteArming::Edge edge = arming.takeEdge(&heldMs);
+    if (edge == meshsat::SatelliteArming::Edge::Pressed)
+        LOG_INFO("MeshSat panel button: pressed");
+    else if (edge == meshsat::SatelliteArming::Edge::Released)
+        LOG_INFO("MeshSat panel button: released after %u ms", static_cast<unsigned>(heldMs));
+    if (arming.takeDirty()) {
+        Preferences prefs;
+        if (prefs.begin("meshsat", false)) {
+            prefs.putBool(NVS_BUTTON_SEEN, arming.active());
+            prefs.putUChar(NVS_BUTTON_KIND, arming.kind() == meshsat::SwitchKind::Latching ? 1 : 0);
+            prefs.end();
+        }
+    }
+    noteArmEvent(ev, now);
+}
+#else
+bool IridiumPipe::panelButtonActive() const
+{
+    return false;
+}
+
+bool IridiumPipe::satelliteArmed() const
+{
+    return false;
+}
+#endif
+
 void IridiumPipe::sampleCell(uint32_t now)
 {
     if (!Throttle::hasElapsed(lastCellSampleMs, CELL_SAMPLE_MS))
@@ -523,7 +625,18 @@ void IridiumPipe::sendProbe(uint32_t now)
 void IridiumPipe::runModemPower(uint32_t now)
 {
     sampleCell(now);
-    const bool stopWanted = cellLowSamples >= CELL_LOW_SAMPLES;
+    const bool cellLow = cellLowSamples >= CELL_LOW_SAMPLES;
+#if defined(MESHSAT_PANEL_BUTTON_PIN) && defined(MESHSAT_IRIDIUM_ENABLE_PIN)
+    // A low cell disarms, so voltage recovery never arms again (CE technical file R13); then the button's state is
+    // a stop reason of its own. Before this unit's first press the button changes nothing.
+    if (cellLow && arming.armed())
+        noteArmEvent(arming.disarmForCell(), now);
+    const bool disarmed = arming.active() && !arming.armed();
+#else
+    const bool disarmed = false;
+#endif
+    const bool stopWanted = cellLow || disarmed;
+    const char *stopWhy = cellLow ? "cell under the off-threshold" : "satellite disarmed";
     const bool clientOn = currentOwner.load() != IridiumModemOwner::None;
     switch (modemPowerState) {
     case IridiumModemPower::Inhibited:
@@ -547,7 +660,7 @@ void IridiumPipe::runModemPower(uint32_t now)
 #endif
         if (modemOffMs != 0 && !Throttle::hasElapsed(modemOffMs, MIN_OFF_MS))
             return;
-        if (cellOkSamples >= CELL_OK_SAMPLES)
+        if (!disarmed && cellOkSamples >= CELL_OK_SAMPLES)
             startModem(now, false);
         return;
     case IridiumModemPower::Starting:
@@ -556,16 +669,17 @@ void IridiumPipe::runModemPower(uint32_t now)
 #ifdef MESHSAT_IRIDIUM_ENABLE_PIN
             // Never flip I_EN before I_BTD has confirmed the start (Ground Control): the stop waits for it.
             stopAfterBoot = true;
-            LOG_WARN("MeshSat Iridium: cell under the off-threshold while the modem starts; I_EN stays high until I_BTD "
-                     "confirms the start, then the modem is shut down");
+            LOG_WARN("MeshSat Iridium: %s while the modem starts; I_EN stays high until I_BTD confirms the start, then "
+                     "the modem is shut down",
+                     stopWhy);
 #else
-            stopModem("cell under the off-threshold while starting");
+            stopModem(stopWhy);
             return;
 #endif
         }
         if (digitalRead(MESHSAT_IRIDIUM_BOOTED_PIN) == HIGH) {
             if (stopAfterBoot) {
-                stopModem("cell under the off-threshold; the start completed first");
+                stopModem("stop asked for while starting; the start completed first");
                 return;
             }
             openUart();
@@ -573,8 +687,8 @@ void IridiumPipe::runModemPower(uint32_t now)
             LOG_INFO("MeshSat Iridium: I_BTD high, the modem has booted");
         } else if (Throttle::hasElapsed(modemPoweredMs, BOOTED_WAIT_MAX_MS)) {
             if (stopAfterBoot) {
-                // The start never completed, so the cycle rule has nothing to wait for; a low cell wins.
-                stopModem("cell under the off-threshold and I_BTD never went high");
+                // The start never completed, so the cycle rule has nothing to wait for; the stop wins.
+                stopModem("stop asked for while starting and I_BTD never went high");
                 return;
             }
             modemPowerState = IridiumModemPower::Fault;
@@ -582,7 +696,7 @@ void IridiumPipe::runModemPower(uint32_t now)
         }
 #else
         if (stopWanted) {
-            stopModem("cell under the off-threshold while starting");
+            stopModem(stopWhy);
             return;
         }
         // Four wires: nothing says booted. After the guard, one probe into a modem whose start is unobserved.
@@ -597,7 +711,7 @@ void IridiumPipe::runModemPower(uint32_t now)
         return;
     case IridiumModemPower::Running:
         if (stopWanted) {
-            stopModem("cell under the off-threshold");
+            stopModem(stopWhy);
             return;
         }
 #ifdef MESHSAT_IRIDIUM_BOOTED_PIN
@@ -647,7 +761,7 @@ void IridiumPipe::runModemPower(uint32_t now)
         return;
     case IridiumModemPower::Fault:
         if (stopWanted) {
-            stopModem("cell under the off-threshold while in fault");
+            stopModem(stopWhy);
             return;
         }
         if (stat.modemAnswered) {
@@ -666,6 +780,16 @@ void IridiumPipe::runModemPower(uint32_t now)
 IridiumModemPower IridiumPipe::modemPower() const
 {
     return IridiumModemPower::Running;
+}
+
+bool IridiumPipe::panelButtonActive() const
+{
+    return false;
+}
+
+bool IridiumPipe::satelliteArmed() const
+{
+    return false;
 }
 #endif
 
@@ -967,6 +1091,9 @@ int32_t IridiumPipe::runOnce()
         discardPhoneBytes();
 
 #if MESHSAT_IRIDIUM_JSPR
+#if defined(MESHSAT_PANEL_BUTTON_PIN) && defined(MESHSAT_IRIDIUM_ENABLE_PIN)
+    runArming(millis());
+#endif
     runModemPower(millis());
     if (!uartOpen) {
         // Supply off, start unconfirmed, or between probes: a client's bytes have nowhere to go.
@@ -1299,6 +1426,11 @@ void IridiumPipe::onResponseLine()
         // answers its messageOriginate with an id, and out at its final status event.
         const int status = (code[0] - '0') * 100 + (code[1] - '0') * 10 + (code[2] - '0');
         const char *target = responseLine + 4;
+#if defined(MESHSAT_PANEL_BUTTON_PIN) && defined(MESHSAT_IRIDIUM_ENABLE_PIN)
+        // Satellite traffic for the 15-minute idle timeout: a message going in, its status, or one coming down.
+        if (strncmp(target, "messageOriginate", 16) == 0 || strncmp(target, "messageTerminate", 16) == 0)
+            arming.noteTraffic(now);
+#endif
         if (status == 200 && strncmp(target, "messageOriginate ", 17) == 0 && strstr(target, "\"message_id\"") != nullptr) {
             if (stat.moInModem < 99)
                 stat.moInModem++;

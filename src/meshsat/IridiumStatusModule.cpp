@@ -144,6 +144,15 @@ void IridiumStatusModule::noteEvents()
 #endif
     }
 
+    if (st.armEventMs != seenArmEventMs) {
+        seenArmEventMs = st.armEventMs;
+#if HAS_SCREEN
+        // The panel button's arm and disarm (MESHSAT-1667).
+        if (screen && !quiet && st.armEvent != 0)
+            screen->showSimpleBanner(meshsat::armEventText(static_cast<meshsat::ArmEvent>(st.armEvent)), BANNER_MS);
+#endif
+    }
+
     if (st.modemAnswered != seenModemAnswered) {
         seenModemAnswered = st.modemAnswered;
 #if HAS_SCREEN

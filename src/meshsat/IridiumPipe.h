@@ -6,6 +6,7 @@
 
 #include "Observer.h"
 #include "concurrency/OSThread.h"
+#include "meshsat/SatelliteArming.h"
 
 #include <atomic>
 #include <cstddef>
@@ -67,6 +68,9 @@ struct IridiumStats {
     // messageOriginateStatus), whoever put them in; kept across a software reset. 0 after a power-on,
     // when the node cannot know what the modem still holds.
     uint32_t moInModem = 0;
+    // The panel button's last arming event (meshsat::ArmEvent) and when, for the screen (MESHSAT-1667).
+    uint8_t armEvent = 0;
+    uint32_t armEventMs = 0;
 };
 
 // Binary-safe BLE <-> UART pipe to the RockBLOCK 9603, served next to the Meshtastic service.
@@ -137,6 +141,10 @@ class IridiumPipe : private concurrency::OSThread
 
     IridiumModemOwner owner() const { return currentOwner.load(); }
     IridiumModemPower modemPower() const;
+    // The panel button (MESHSAT-1667): active once this unit's button was ever pressed; then the modem runs only
+    // while armed. Without a button, or before its first press, the modem runs as it always did.
+    bool panelButtonActive() const;
+    bool satelliteArmed() const;
     bool sessionInFlight() const { return sessionInFlightFlag.load(); }
     const IridiumStats &stats() const { return stat; }
 
@@ -244,6 +252,13 @@ class IridiumPipe : private concurrency::OSThread
     // The cell asked for a stop while the start was unconfirmed: the stop waits for I_BTD high first
     // (Ground Control: once I_EN is high it stays high until I_BTD has gone high).
     bool stopAfterBoot = false;
+#endif
+#if defined(MESHSAT_PANEL_BUTTON_PIN) && defined(MESHSAT_IRIDIUM_ENABLE_PIN)
+    meshsat::SatelliteArming arming;
+    void restoreArming(uint32_t now);
+    void runArming(uint32_t now);
+    void noteArmEvent(meshsat::ArmEvent ev, uint32_t now);
+    bool cellAllowsArming() const;
 #endif
 #ifdef MESHSAT_IRIDIUM_ENABLE_PIN
     // I_EN is low and I_BTD has not confirmed the shutdown yet: I_EN stays low until it does.
