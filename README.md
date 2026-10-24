@@ -56,7 +56,11 @@ esptool --chip esp32s3 --port /dev/ttyACM0 write-flash \
   0x670000 .pio/build/meshsat-tbeam-s3-rockblock/littlefs-meshsat-tbeam-s3-rockblock-*.bin
 ```
 
-Then set it up like any Meshtastic node: region, owner name and a fixed Bluetooth PIN. Add a channel named `i9603` if the node should carry texts over the satellite on its own; that is the only channel it sends. Updates go over USB the same way. Over-the-air updates are not supported by this fork.
+Then set it up like any Meshtastic node: region, owner name and a fixed Bluetooth PIN. Add a channel named `i9603` if the node should carry texts over the satellite on its own; that is the only channel it sends.
+
+### Updates
+
+Every `meshsat-node-<version>` tag publishes a [release](https://github.com/meshsat/meshsat-firmware/releases) with each env's app image (`firmware-<env>-<version>.bin`), its factory and littlefs images, `SHA256SUMS`, and a `manifest.json` that names the app image, its size and its SHA-256 per env. MeshSat Android reads `releases/latest/download/manifest.json` and installs the app image for the node's own env over Bluetooth (Settings > Satellite > Node firmware), through Meshtastic's BLE OTA loader. The loader sits in the second app slot and is not in the factory image: when you flash over USB, also write `mt-esp32s3-ota.bin` from the [Meshtastic 2.8.0 release](https://github.com/meshtastic/firmware/releases/tag/v2.8.0.47db0e3) at `0x340000`. Over USB, writing the app image alone at `0x10000` keeps the node's settings and Bluetooth bonds.
 
 ## What is proven, and what is not
 

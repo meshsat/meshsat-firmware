@@ -7,6 +7,7 @@
 
 stages:
   - build
+  - release
 
 variables:
   PLATFORMIO_CORE_DIR: "$CI_PROJECT_DIR/.platformio"
@@ -76,3 +77,29 @@ build:xiao-s3-rockblock:
   extends: .firmware
   variables:
     ENV: meshsat-xiao-s3-rockblock
+
+# A tag meshsat-node-<version> (version as the build writes it: 2.8.0.<sha7> of the tagged commit)
+# publishes every env's images, SHA256SUMS and manifest.json as a normal GitHub release on the
+# public mirror; the apps read releases/latest/download/manifest.json (MESHSAT-1672). GHCR_TOKEN
+# is a protected group variable, so meshsat-node-* is a protected tag on this project.
+release:github:
+  stage: release
+  image: python:3.12-slim
+  tags: [multiarch]
+  variables:
+    GIT_DEPTH: 1
+  needs:
+    - job: build:tbeam-s3-rockblock
+      artifacts: true
+    - job: build:tbeam-s3-rockblock9704
+      artifacts: true
+    - job: build:xiao-s3-rockblock
+      artifacts: true
+  script:
+    - python3 bin/meshsat-github-release.py
+  artifacts:
+    paths:
+      - release-assets/
+    expire_in: 30 days
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^meshsat-node-/
