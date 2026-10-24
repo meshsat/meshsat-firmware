@@ -21,6 +21,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 */
 #include "Screen.h"
+#if MESHSAT_IRIDIUM
+#include "meshsat/NodeControl.h"
+#endif
 #include "NodeDB.h"
 #include "PowerMon.h"
 #include "Throttle.h"
@@ -679,6 +682,12 @@ void Screen::handleSetOn(bool on, FrameCallback einkScreensaver)
 {
     if (!useDisplay)
         return;
+#if MESHSAT_IRIDIUM
+    // The owner switched the screen off from the phone: nothing but that switch or a press on the
+    // unit turns it on again (meshsat/NodeControl, MESHSAT-1671).
+    if (on && meshsat::screenForcedOff())
+        return;
+#endif
 
     if (on != screenOn) {
         if (on) {

@@ -6,6 +6,7 @@
 #include "mesh/Throttle.h"
 #include "meshsat/DownReason.h"
 #include "meshsat/IridiumPipe.h"
+#include "meshsat/NodeControl.h"
 
 #if HAS_SCREEN
 #include "graphics/Screen.h"
@@ -156,14 +157,18 @@ void IridiumStatusModule::noteEvents()
 
 void IridiumStatusModule::setLed(Led mode)
 {
-    if (ledKnown && mode == led)
+    // The owner switched the LED off from the phone (MESHSAT-1671): the state logic still runs and
+    // is shown again the moment the switch goes back on.
+    const bool forcedOff = meshsat::ledForcedOff();
+    if (ledKnown && mode == led && forcedOff == ledForcedApplied)
         return;
     led = mode;
     ledKnown = true;
+    ledForcedApplied = forcedOff;
 #if defined(HAS_PMU)
     if (!PMU)
         return;
-    switch (mode) {
+    switch (forcedOff ? Led::Off : mode) {
     case Led::Off:
         PMU->setChargingLedMode(XPOWERS_CHG_LED_OFF);
         break;

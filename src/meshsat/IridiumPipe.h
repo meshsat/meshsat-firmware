@@ -97,6 +97,12 @@ class IridiumPipe : private concurrency::OSThread
     // Contract v2 (MESHSAT-1378), additive: node health for the apps, and pass windows from the phone.
     static constexpr const char *STATS_UUID = "9c22cf07-2256-4fc2-b6ee-ab0ceb12198d";
     static constexpr const char *PASS_UUID = "5c1000e8-f411-4f3d-a4c9-5ee0610a8e66";
+    // Additive (MESHSAT-1671): the owner's switches for the node, written by the phone as pairs
+    // [switch][value]: switch 0x01 the status LED, 0x02 the screen; value 0x00 on, 0x01 off.
+    // Kept in NVS; STATUS flags bits 5 (LED off) and 6 (screen off) report them.
+    static constexpr const char *CONTROL_UUID = "d6a8a903-6af1-4530-ab3d-49c39b636e04";
+    static constexpr uint8_t CONTROL_LED = 0x01;
+    static constexpr uint8_t CONTROL_SCREEN = 0x02;
     static constexpr uint8_t STATS_VERSION = 2;
     static constexpr size_t STATS_BYTES = 52;
     static constexpr size_t MAX_PASS_WINDOWS = 8;
@@ -110,7 +116,7 @@ class IridiumPipe : private concurrency::OSThread
     // Bumped whenever the service's attribute table changes (a characteristic added or removed).
     // A bonded phone keeps a cached copy of the table; for the boots after a change the node
     // indicates Service Changed to every authenticated peer so the phone discovers again.
-    static constexpr uint32_t GATT_TABLE_VERSION = 2;
+    static constexpr uint32_t GATT_TABLE_VERSION = 3;
     static constexpr uint32_t SERVICE_CHANGED_BOOTS = 20;
     // Called from NimbleBluetooth after an authenticated link comes up.
     void onAuthenticated(uint16_t connHandle);
@@ -120,6 +126,7 @@ class IridiumPipe : private concurrency::OSThread
     size_t passWindowCount() const { return passCount; }
     const PassWindow &passWindow(size_t index) const { return passWindows[index]; }
     void onPassWrite(const uint8_t *data, size_t length);
+    void onControlWrite(const uint8_t *data, size_t length);
     // Signal bars from a JSPR constellationState event, for the screen and the apps; never a send gate.
     void noteSignal(int bars);
 
@@ -167,6 +174,7 @@ class IridiumPipe : private concurrency::OSThread
     uint8_t statusFlags() const;
     void publishStats();
     void applyPendingPassList();
+    void applyPendingControl();
     void reportDrops();
     void discardPhoneBytes();
     bool pumpPhoneToModem();
@@ -205,6 +213,9 @@ class IridiumPipe : private concurrency::OSThread
     PassWindow pendingPass[MAX_PASS_WINDOWS];
     size_t pendingPassCount = 0;
     std::atomic<bool> pendingPassReady{false};
+    // CONTROL: the BLE thread stores the latest wish per switch (0xFF = none), runOnce acts on it.
+    std::atomic<uint8_t> pendingLed{0xFF};
+    std::atomic<uint8_t> pendingScreen{0xFF};
     uint32_t dropsSinceLog = 0;
     uint32_t lastDropLogMs = 0;
     bool holdLogged = false;

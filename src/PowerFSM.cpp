@@ -8,6 +8,9 @@
  * actions to be taken upon entering or exiting each state.
  */
 #include "PowerFSM.h"
+#if MESHSAT_IRIDIUM
+#include "meshsat/NodeControl.h"
+#endif
 #include "Default.h"
 #include "MeshService.h"
 #include "NodeDB.h"
@@ -165,6 +168,9 @@ static void lsIdle()
                 pressed = true;
 #endif
                 if (pressed) {
+#if MESHSAT_IRIDIUM
+                    meshsat::onUserButton();
+#endif
                     powerFSM.trigger(EVENT_PRESS);
                 }
                 break;

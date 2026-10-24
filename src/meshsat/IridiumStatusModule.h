@@ -65,6 +65,8 @@ class IridiumStatusModule : public MeshModule, private concurrency::OSThread
 
     Led led = Led::Off;
     bool ledKnown = false;
+    // The owner's LED switch as last applied (MESHSAT-1671).
+    bool ledForcedApplied = false;
     const BlinkStep *script = nullptr;
     uint8_t scriptCount = 0;
     uint8_t scriptStep = 0;

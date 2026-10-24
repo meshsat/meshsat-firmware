@@ -1,4 +1,7 @@
 #include "ButtonThread.h"
+#if MESHSAT_IRIDIUM
+#include "meshsat/NodeControl.h"
+#endif
 #include "meshUtils.h"
 
 #include "configuration.h"
@@ -188,6 +191,9 @@ int32_t ButtonThread::runOnce()
         evt.touchY = 0;
         switch (btnEvent) {
         case BUTTON_EVENT_PRESSED: {
+#if MESHSAT_IRIDIUM
+            meshsat::onUserButton();
+#endif
             // Forward single press to InputBroker (but NOT as DOWN/SELECT, just forward a "button press" event)
             evt.inputEvent = _singlePress;
             // evt.kbchar = _singlePress; // todo: fix this. Some events are kb characters rather than event types

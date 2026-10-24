@@ -9,6 +9,7 @@
 #include "meshsat/DownReason.h"
 #include "meshsat/IridiumImtModule.h"
 #include "meshsat/IridiumModule.h"
+#include "meshsat/NodeControl.h"
 #include "sleep.h"
 
 #include <Arduino.h>
@@ -172,6 +173,15 @@ class IridiumPipePassCallbacks : public BLECharacteristicCallbacks
     }
 };
 
+class IridiumPipeControlCallbacks : public BLECharacteristicCallbacks
+{
+    void onWrite(BLECharacteristic *characteristic) override
+    {
+        if (pipeInstance)
+            pipeInstance->onControlWrite(characteristic->getData(), characteristic->getLength());
+    }
+};
+
 // NimBLE makes room in a full store by deleting the oldest bond; that phone must then pair again.
 class IridiumPipeStoreCallbacks : public BLEDeviceCallbacks
 {
@@ -187,6 +197,7 @@ class IridiumPipeStoreCallbacks : public BLEDeviceCallbacks
 static IridiumPipeRxCallbacks rxCallbacks;
 static IridiumPipeTxCallbacks txCallbacks;
 static IridiumPipePassCallbacks passCallbacks;
+static IridiumPipeControlCallbacks controlCallbacks;
 static IridiumPipeStoreCallbacks storeCallbacks;
 
 IridiumPipe::IridiumPipe() : concurrency::OSThread("IridiumPipe")
@@ -200,6 +211,7 @@ void IridiumPipe::begin()
     if (pipeInstance)
         return;
     meshsat::loadDownReason();
+    meshsat::loadNodeControl();
     incoming = xStreamBufferCreateStatic(INCOMING_BYTES, 1, incomingStorage, &incomingControl);
     pipeInstance = new IridiumPipe();
     pipeInstance->deepSleepObserver.observe(&notifyDeepSleep);
@@ -305,6 +317,9 @@ void IridiumPipe::setupBleService(BLEServer *server, bool requireEncryption)
     statsCharacteristic->setValue(emptyStats, sizeof(emptyStats));
     BLECharacteristic *pass = service->createCharacteristic(PASS_UUID, rxProperties);
     pass->setCallbacks(&passCallbacks);
+    // Additive (MESHSAT-1671): the owner's LED and screen switches.
+    BLECharacteristic *control = service->createCharacteristic(CONTROL_UUID, rxProperties);
+    control->setCallbacks(&controlCallbacks);
     if (pipeInstance)
         pipeInstance->lastStatsMs = 0;
     service->start();
@@ -741,6 +756,11 @@ uint8_t IridiumPipe::statusFlags() const
         flags |= 0x01;
     if (stat.ringPending)
         flags |= 0x02;
+    // Bits 5 and 6 (MESHSAT-1671): the owner switched the status LED, the screen off.
+    if (meshsat::ledForcedOff())
+        flags |= 0x20;
+    if (meshsat::screenForcedOff())
+        flags |= 0x40;
     if (stat.modemAnswered)
         flags |= 0x04;
     if (incoming && xStreamBufferBytesAvailable(incoming) > INCOMING_BYTES * 3 / 4)
@@ -859,6 +879,31 @@ void IridiumPipe::onPassWrite(const uint8_t *data, size_t length)
     pendingPassReady.store(true);
 }
 
+void IridiumPipe::onControlWrite(const uint8_t *data, size_t length)
+{
+    // Pairs of [switch][value]; anything else is ignored. Acted on in runOnce, not on the BLE thread
+    // (the switches are written to flash).
+    for (size_t i = 0; data && i + 1 < length; i += 2) {
+        const uint8_t value = data[i + 1];
+        if (value > 1)
+            continue;
+        if (data[i] == CONTROL_LED)
+            pendingLed.store(value);
+        else if (data[i] == CONTROL_SCREEN)
+            pendingScreen.store(value);
+    }
+}
+
+void IridiumPipe::applyPendingControl()
+{
+    const uint8_t led = pendingLed.exchange(0xFF);
+    if (led != 0xFF)
+        meshsat::setLedForcedOff(led == 1);
+    const uint8_t screenWish = pendingScreen.exchange(0xFF);
+    if (screenWish != 0xFF)
+        meshsat::setScreenForcedOff(screenWish == 1);
+}
+
 void IridiumPipe::applyPendingPassList()
 {
     if (!pendingPassReady.exchange(false))
@@ -912,6 +957,7 @@ int32_t IridiumPipe::runOnce()
     updateOwner();
     reportDrops();
     applyPendingPassList();
+    applyPendingControl();
     if (STATUS_BYTES >= 4 && statusFlags() != lastStatus[2])
         publishStatus();
     publishStats();
