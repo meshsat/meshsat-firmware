@@ -36,7 +36,7 @@ Based on Meshtastic® firmware. This project is not affiliated with or endorsed 
 | `meshsat-tbeam-s3-rockblock9704` | LILYGO T-Beam Supreme + RockBLOCK 9704 (compact v2, MSC-2) | header by printed label: TXD/RXD (GPIO43/44) on UART2 at 230400 (JSPR); the cell feeds the modem on VBAT; IO21 drives I_EN and IO39 reads I_BTD, so the firmware runs Ground Control's start and stop sequence (since 24 Oct 2026) |
 | `meshsat-xiao-s3-rockblock`      | Seeed XIAO ESP32-S3 + Wio-SX1262 (node v0)                 | D6/D7, GPIO43/44 on UART1, external 5 V supply; the XIAO variant's GPS is compiled out because it uses the same pins                                                                                                               |
 
-The Iridium pipe is in `src/meshsat/`. It hooks into upstream code in two places, both behind `#if MESHSAT_IRIDIUM`: the Bluetooth service setup in `src/nimble/NimbleBluetooth.cpp` and module setup in `src/modules/Modules.cpp`. Everything else is upstream, unchanged.
+The Iridium pipe is in `src/meshsat/`. It hooks into upstream code in five places, all behind `#if MESHSAT_IRIDIUM`: the Bluetooth service setup in `src/nimble/NimbleBluetooth.cpp`, module setup in `src/modules/Modules.cpp`, and since 24 October 2026 the owner's screen switch in `src/graphics/Screen.cpp` (`handleSetOn`), `src/input/ButtonThread.cpp` and `src/PowerFSM.cpp` (a press on the unit's button brings a switched-off screen back). Everything else is upstream, unchanged.
 
 ## Build and flash
 
