@@ -33,6 +33,8 @@ class IridiumImtModule : public SinglePortModule, private concurrency::OSThread
     uint32_t sentAsNodeCount() const { return sentAsNode; }
     uint32_t receivedAsNodeCount() const { return receivedAsNode; }
     uint32_t failedAsNodeCount() const { return failedAsNode; }
+    // Texts waiting on the node for the modem (not yet handed over).
+    size_t waitingCount() const { return queueCount; }
 
   protected:
     ProcessMessage handleReceived(const meshtastic_MeshPacket &mp) override;

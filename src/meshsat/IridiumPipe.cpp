@@ -60,6 +60,14 @@ static constexpr uint32_t PROBE_MISSES_TO_FAULT = 5;
 // With I_BTD wired, a start that never reads booted within this time is a fault.
 static constexpr uint32_t BOOTED_WAIT_MAX_MS = 3 * JSPR_BOOT_WAIT_MS;
 #endif
+// How many messages the 9704 holds, as the pipe saw them go in and come to a final status, kept across a
+// software reset like the I_EN level. Whether the modem keeps its queue through its own restart is not known.
+struct IridiumQueueMemory {
+    uint32_t magic;
+    uint32_t inModem;
+};
+static constexpr uint32_t QUEUE_MEMORY_MAGIC = 0x4D4F5131; // "MOQ1"
+static RTC_NOINIT_ATTR IridiumQueueMemory queueMemory;
 #ifdef MESHSAT_IRIDIUM_ENABLE_PIN
 // After I_EN goes low the 9704 shuts down on its supercapacitors and I_BTD low confirms it. A shutdown that is
 // not confirmed is logged at this interval, and I_EN stays low (Ground Control: never high again before I_BTD is low).
@@ -196,6 +204,15 @@ void IridiumPipe::begin()
     pipeInstance = new IridiumPipe();
     pipeInstance->deepSleepObserver.observe(&notifyDeepSleep);
 #if MESHSAT_IRIDIUM_JSPR
+    if (queueMemory.magic == QUEUE_MEMORY_MAGIC && queueMemory.inModem <= 99) {
+        pipeInstance->stat.moInModem = queueMemory.inModem;
+        if (queueMemory.inModem > 0)
+            LOG_INFO("MeshSat Iridium: %u message(s) in the modem before the reset, still counted",
+                     (unsigned)queueMemory.inModem);
+    } else {
+        queueMemory.magic = QUEUE_MEMORY_MAGIC;
+        queueMemory.inModem = 0;
+    }
     // Inputs stay high-impedance (UART0 owns GPIO43 after reset) until the modem has booted.
     pinMode(MESHSAT_IRIDIUM_TX_PIN, INPUT);
     pinMode(MESHSAT_IRIDIUM_RX_PIN, INPUT);
@@ -1232,6 +1249,23 @@ void IridiumPipe::onResponseLine()
         LOG_DEBUG("MeshSat Iridium: JSPR %.48s", responseLine);
         stat.modemAnswered = true;
         stat.lastModemOkMs = now;
+        // The modem's queue, counted as it passes whoever holds the modem: a message is in once the modem
+        // answers its messageOriginate with an id, and out at its final status event.
+        const int status = (code[0] - '0') * 100 + (code[1] - '0') * 10 + (code[2] - '0');
+        const char *target = responseLine + 4;
+        if (status == 200 && strncmp(target, "messageOriginate ", 17) == 0 && strstr(target, "\"message_id\"") != nullptr) {
+            if (stat.moInModem < 99)
+                stat.moInModem++;
+            queueMemory.magic = QUEUE_MEMORY_MAGIC;
+            queueMemory.inModem = stat.moInModem;
+            LOG_INFO("MeshSat Iridium: a message went into the modem, %u waiting for sky", (unsigned)stat.moInModem);
+        } else if (status == 299 && strncmp(target, "messageOriginateStatus ", 23) == 0) {
+            if (stat.moInModem > 0)
+                stat.moInModem--;
+            queueMemory.magic = QUEUE_MEMORY_MAGIC;
+            queueMemory.inModem = stat.moInModem;
+            LOG_INFO("MeshSat Iridium: the modem settled a message, %u waiting for sky", (unsigned)stat.moInModem);
+        }
     }
     return;
 #endif

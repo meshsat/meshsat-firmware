@@ -13,6 +13,9 @@
 #include "main.h"
 #include "mesh/Throttle.h"
 #include "meshsat/IridiumPipe.h"
+#if MESHSAT_IRIDIUM_JSPR
+#include "meshsat/IridiumImtModule.h"
+#endif
 #include "meshsat/IridiumStatusModule.h"
 #include "meshsat/MeshSatBranding.h"
 
@@ -122,13 +125,24 @@ void drawHomeScreen(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, 
     char text[32];
     char age[8];
 
-    // Line 1: the node's short name in bold and its region on the left; bars and the modem's owner on the right.
+    // Line 1: the node's short name in bold on the left, then the satellite queue (9704 build: texts waiting on
+    // the node plus messages in the modem, owner's ask of 24 Oct 2026) or the region (9603 build); bars and
+    // the modem's holder on the right.
     const char *shortName = owner.short_name[0] ? owner.short_name : "node";
     drawWeighted(display, left, line1, shortName, 2);
+    IridiumPipe *pipe = IridiumPipe::instance();
+#if MESHSAT_IRIDIUM_JSPR
+    {
+        unsigned queued = pipe ? pipe->stats().moInModem : 0;
+        if (iridiumImtModule)
+            queued += static_cast<unsigned>(iridiumImtModule->waitingCount());
+        snprintf(text, sizeof(text), "  %u queued", queued);
+    }
+#else
     snprintf(text, sizeof(text), "  %s", myRegion && myRegion->name ? myRegion->name : "");
+#endif
     display->drawString(left + display->getStringWidth(shortName) + 1, line1, text);
 
-    IridiumPipe *pipe = IridiumPipe::instance();
     if (!pipe) {
         display->drawString(left, rows[2] + y, "no Iridium pipe");
         return;

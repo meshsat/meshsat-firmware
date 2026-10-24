@@ -63,6 +63,10 @@ struct IridiumStats {
     uint32_t foreignSubscribes = 0;
     // When a phone last gave the modem back (0 = never); the node's own routing waits after it.
     uint32_t lastPhoneReleaseMs = 0;
+    // Messages the 9704 accepted (JSPR 200 messageOriginate) and has not reported final (299
+    // messageOriginateStatus), whoever put them in; kept across a software reset. 0 after a power-on,
+    // when the node cannot know what the modem still holds.
+    uint32_t moInModem = 0;
 };
 
 // Binary-safe BLE <-> UART pipe to the RockBLOCK 9603, served next to the Meshtastic service.
