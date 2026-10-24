@@ -225,8 +225,11 @@ void drawHomeSatelliteRow(OLEDDisplay *display, int16_t x, int16_t y)
             ownerWord = "mesh";
         const uint32_t now = millis();
         const IridiumModemPower power = pipe->modemPower();
-        if (power == IridiumModemPower::Inhibited) {
-            snprintf(text, sizeof(text), "Sat: modem off, cell low");
+        const bool buttonInUse = pipe->panelButtonActive();
+        if (buttonInUse && !pipe->satelliteArmed()) {
+            snprintf(text, sizeof(text), "%s", power == IridiumModemPower::Inhibited ? "Sat: disarmed" : "Sat: disarming");
+        } else if (power == IridiumModemPower::Inhibited) {
+            snprintf(text, sizeof(text), "%s", buttonInUse ? "Sat: armed, starting" : "Sat: modem off, cell low");
         } else if (power == IridiumModemPower::Starting) {
             snprintf(text, sizeof(text), "Sat: modem starting");
         } else if (power == IridiumModemPower::Fault) {
