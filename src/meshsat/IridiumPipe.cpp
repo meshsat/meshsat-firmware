@@ -4,6 +4,7 @@
 
 #include "NodeDB.h"
 #include "Power.h"
+#include "PowerFSM.h"
 #include "PowerStatus.h"
 #include "mesh/Throttle.h"
 #include "meshsat/BleWatchdog.h"
@@ -437,6 +438,16 @@ static constexpr uint32_t BEACON_PHONE_PATIENCE_MS = 30 * 1000UL;
 static constexpr uint32_t BEACON_PHONE_GAP_MS = 500;
 static constexpr uint32_t FIX_SAMPLE_MS = 1000;
 
+// Wakes the screen as a press on the unit's own button does (owner, 2 Nov 2026): on every flip of the panel switch,
+// and with every beacon message. A flip also lifts a screen the owner switched off from the phone, as the unit's
+// button does; a beacon message only wakes a screen that went dark on its timeout.
+static void wakeScreen(bool liftForcedOff)
+{
+    if (liftForcedOff)
+        meshsat::onUserButton();
+    powerFSM.trigger(EVENT_PRESS);
+}
+
 bool IridiumPipe::beaconOn() const
 {
     return beacon.on();
@@ -593,6 +604,7 @@ void IridiumPipe::runBeacon(uint32_t now)
             LOG_WARN("MeshSat beacon: message could not be queued");
         // Taken either way: a message that cannot be queued now is not retried in a tight loop.
         beacon.taken(now, kind);
+        wakeScreen(false);
     }
     const bool settled = beaconSettled();
     if (beacon.finishDrain(now, settled))
@@ -610,6 +622,8 @@ void IridiumPipe::runArming(uint32_t now)
         LOG_INFO("MeshSat panel button: pressed");
     else if (edge == meshsat::SatelliteArming::Edge::Released)
         LOG_INFO("MeshSat panel button: released after %u ms", static_cast<unsigned>(heldMs));
+    if (edge != meshsat::SatelliteArming::Edge::None)
+        wakeScreen(true);
     if (arming.takeDirty()) {
         Preferences prefs;
         if (prefs.begin("meshsat", false)) {
