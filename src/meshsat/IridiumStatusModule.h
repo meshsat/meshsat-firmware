@@ -26,6 +26,8 @@
 //   last session failed      one long blink once, only when the last CSQ within 60 s was 1 or more
 //   message waiting          double blink every 5 s until fetched
 //   modem silent             1 Hz
+// In the 9704 build (owner, 2 Nov 2026) it says one thing only: a short blip every 3 s while the satellite beacon is
+// on (the panel switch), dark otherwise (MESHSAT-1772).
 class IridiumStatusModule : public MeshModule, private concurrency::OSThread
 {
   public:

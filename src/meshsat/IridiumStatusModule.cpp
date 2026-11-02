@@ -37,6 +37,11 @@ static const IridiumStatusModule::BlinkStep SENT_SCRIPT[] = {{100, 120}, {100, 1
 static const IridiumStatusModule::BlinkStep FAIL_SCRIPT[] = {{1000, 0}};
 static const IridiumStatusModule::BlinkStep WAITING_SCRIPT[] = {{80, 120}, {80, 0}};
 static const IridiumStatusModule::BlinkStep HEARTBEAT_SCRIPT[] = {{60, 0}};
+#if MESHSAT_IRIDIUM_JSPR && defined(MESHSAT_PANEL_BUTTON_PIN) && defined(MESHSAT_IRIDIUM_ENABLE_PIN)
+// The beacon's blip (MESHSAT-1772): one short flash every few seconds while the satellite beacon is on.
+static constexpr uint32_t BEACON_BLIP_EVERY_MS = 3 * 1000UL;
+static const IridiumStatusModule::BlinkStep BEACON_BLIP_SCRIPT[] = {{80, 0}};
+#endif
 
 IridiumStatusModule::IridiumStatusModule() : MeshModule("IridiumStatus"), concurrency::OSThread("IridiumStatus") {}
 
@@ -238,6 +243,29 @@ int32_t IridiumStatusModule::driveLed()
         return POLL_INTERVAL_MS;
     const IridiumStats &st = pipe->stats();
     const uint32_t now = millis();
+
+#if MESHSAT_IRIDIUM_JSPR && defined(MESHSAT_PANEL_BUTTON_PIN) && defined(MESHSAT_IRIDIUM_ENABLE_PIN)
+    // The 9704 build (owner, 2 Nov 2026): the LED says one thing, the satellite beacon is on, with a short blip every
+    // few seconds, the first one at once; dark otherwise, whoever holds the modem. The screen and the apps carry the rest.
+    (void)st;
+    if (pipe->beaconOn()) {
+        if (runScript(now))
+            return POLL_LED_MS;
+        if (lastHeartbeatMs == 0 || Throttle::hasElapsed(lastHeartbeatMs, BEACON_BLIP_EVERY_MS)) {
+            lastHeartbeatMs = now == 0 ? 1 : now;
+            startScript(BEACON_BLIP_SCRIPT, sizeof(BEACON_BLIP_SCRIPT) / sizeof(BEACON_BLIP_SCRIPT[0]));
+            return POLL_LED_MS;
+        }
+        setLed(Led::Off);
+        return POLL_INTERVAL_MS;
+    }
+    script = nullptr;
+    pendingSentBlink = false;
+    pendingFailBlink = false;
+    lastHeartbeatMs = 0;
+    setLed(Led::Off);
+    return POLL_INTERVAL_MS;
+#endif
 
     // With a phone on the modem the app shows the diagnostics; the LED keeps quiet.
     if (pipe->owner() == IridiumModemOwner::Phone) {
