@@ -177,18 +177,19 @@ class SatelliteArming
 inline const char *armEventText(ArmEvent ev)
 {
     switch (ev) {
+    // Banner words: the armed satellite is the beacon (owner, 2 Nov 2026; never "SOS").
     case ArmEvent::Armed:
-        return "Satellite armed";
+        return "Satellite beacon on";
     case ArmEvent::DisarmedByButton:
-        return "Satellite disarmed";
+        return "Satellite beacon off";
     case ArmEvent::DisarmedIdle:
-        return "Disarmed: 15 min idle";
+        return "Beacon off: 15 min idle";
     case ArmEvent::DisarmedLimit:
-        return "Disarmed: 30 min limit";
+        return "Beacon off: 30 min limit";
     case ArmEvent::DisarmedCellLow:
-        return "Disarmed: cell low";
+        return "Beacon off: cell low";
     case ArmEvent::RefusedCellLow:
-        return "Not armed: cell low";
+        return "Beacon not on: cell low";
     case ArmEvent::LatchingDetected:
         return "Latching switch";
     case ArmEvent::None:

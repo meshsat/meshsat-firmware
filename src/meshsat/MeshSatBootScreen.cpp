@@ -163,12 +163,13 @@ void drawHomeScreen(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, 
 
     // Line 2, the one big thing: the satellite state in a few words.
     const IridiumModemPower power = pipe->modemPower();
-    // With the panel button in use (MESHSAT-1667) the modem is off while disarmed, not for a low cell.
+    // With the panel button in use (MESHSAT-1667) the switch is the one big thing: the satellite beacon, on or off
+    // (owner's words, 2 Nov 2026); the satellite row below says what the modem is doing.
     const bool buttonInUse = pipe->panelButtonActive();
-    if (buttonInUse && !pipe->satelliteArmed()) {
-        snprintf(text, sizeof(text), "%s", power == IridiumModemPower::Inhibited ? "Disarmed" : "Disarming");
+    if (buttonInUse) {
+        snprintf(text, sizeof(text), "%s", pipe->satelliteArmed() ? "SAT BEACON ON" : "SAT BEACON OFF");
     } else if (power == IridiumModemPower::Inhibited) {
-        snprintf(text, sizeof(text), "%s", buttonInUse ? "Armed, starting" : "Modem off: cell low");
+        snprintf(text, sizeof(text), "Modem off: cell low");
     } else if (power == IridiumModemPower::Starting) {
         snprintf(text, sizeof(text), "Modem starting");
     } else if (power == IridiumModemPower::Fault) {
@@ -227,15 +228,27 @@ void drawHomeSatelliteRow(OLEDDisplay *display, int16_t x, int16_t y)
         const IridiumModemPower power = pipe->modemPower();
         const bool buttonInUse = pipe->panelButtonActive();
         if (buttonInUse && !pipe->satelliteArmed()) {
-            snprintf(text, sizeof(text), "%s", power == IridiumModemPower::Inhibited ? "Sat: disarmed" : "Sat: disarming");
+            if (pipe->beaconDraining())
+                snprintf(text, sizeof(text), "Sat: beacon off, sending");
+            else
+                snprintf(text, sizeof(text), "%s",
+                         power == IridiumModemPower::Inhibited ? "Sat: beacon off" : "Sat: beacon off, stopping");
         } else if (power == IridiumModemPower::Inhibited) {
-            snprintf(text, sizeof(text), "%s", buttonInUse ? "Sat: armed, starting" : "Sat: modem off, cell low");
+            snprintf(text, sizeof(text), "%s", buttonInUse ? "Sat: beacon on, starting" : "Sat: modem off, cell low");
         } else if (power == IridiumModemPower::Starting) {
-            snprintf(text, sizeof(text), "Sat: modem starting");
+            snprintf(text, sizeof(text), "%s", buttonInUse ? "Sat: beacon on, starting" : "Sat: modem starting");
         } else if (power == IridiumModemPower::Fault) {
             snprintf(text, sizeof(text), "Sat: modem fault");
         } else if (!st.modemAnswered) {
             snprintf(text, sizeof(text), "Sat: %s, modem silent", ownerWord);
+        } else if (buttonInUse && pipe->beaconOn()) {
+            const uint32_t next = pipe->beaconNextInMs();
+            if (next == 0) {
+                snprintf(text, sizeof(text), "Sat: beacon on, sending");
+            } else {
+                formatAge(age, sizeof(age), next);
+                snprintf(text, sizeof(text), "Sat: beacon on, next %s", age);
+            }
         } else if (st.sessionInFlight) {
             snprintf(text, sizeof(text), "Sat: %s, session...", ownerWord);
         } else if (st.ringPending) {

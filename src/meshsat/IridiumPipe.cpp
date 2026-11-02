@@ -2,6 +2,7 @@
 
 #if MESHSAT_IRIDIUM
 
+#include "NodeDB.h"
 #include "Power.h"
 #include "PowerStatus.h"
 #include "mesh/Throttle.h"
@@ -424,6 +425,32 @@ IridiumModemPower IridiumPipe::modemPower() const
 #if defined(MESHSAT_PANEL_BUTTON_PIN) && defined(MESHSAT_IRIDIUM_ENABLE_PIN)
 static constexpr const char *NVS_BUTTON_SEEN = "btnSeen";
 static constexpr const char *NVS_BUTTON_KIND = "btnKind";
+// The Hub contact the beacon writes to through the "@" lane: a contact of the unit's tenant with this name (spaces and
+// case ignored) and an SMS number (MESHSAT-1667). Never a number here: this repository is public.
+#ifndef MESHSAT_BEACON_CONTACT
+#define MESHSAT_BEACON_CONTACT "beacon"
+#endif
+// A phone holding the modem gives it to a waiting beacon text once it has written nothing for this long; after the text
+// has waited BEACON_PHONE_PATIENCE_MS, a short gap between the phone's requests is enough.
+static constexpr uint32_t BEACON_PHONE_QUIET_MS = 3 * 1000UL;
+static constexpr uint32_t BEACON_PHONE_PATIENCE_MS = 30 * 1000UL;
+static constexpr uint32_t BEACON_PHONE_GAP_MS = 500;
+static constexpr uint32_t FIX_SAMPLE_MS = 1000;
+
+bool IridiumPipe::beaconOn() const
+{
+    return beacon.on();
+}
+
+bool IridiumPipe::beaconDraining() const
+{
+    return beacon.isDraining();
+}
+
+uint32_t IridiumPipe::beaconNextInMs() const
+{
+    return beacon.nextInMs(millis());
+}
 
 bool IridiumPipe::panelButtonActive() const
 {
@@ -474,7 +501,11 @@ void IridiumPipe::noteArmEvent(meshsat::ArmEvent ev, uint32_t now)
     stat.armEventMs = now == 0 ? 1 : now;
     switch (ev) {
     case meshsat::ArmEvent::Armed:
-        LOG_INFO("MeshSat panel button: satellite armed; disarms after 15 min without satellite traffic, 30 min at most");
+        LOG_INFO("MeshSat panel button: satellite armed, beacon on: position now and every 10 min to \"@%s\"; off after 15 "
+                 "min without satellite traffic, 30 min at most",
+                 MESHSAT_BEACON_CONTACT);
+        beaconHandedAtArm = iridiumImtModule ? iridiumImtModule->beaconHandedCount() : 0;
+        beacon.onArmed(now);
         break;
     case meshsat::ArmEvent::RefusedCellLow:
         LOG_WARN("MeshSat panel button: not armed, the cell is under %d mV", MESHSAT_IRIDIUM_CELL_ON_MV);
@@ -482,10 +513,91 @@ void IridiumPipe::noteArmEvent(meshsat::ArmEvent ev, uint32_t now)
     case meshsat::ArmEvent::LatchingDetected:
         LOG_INFO("MeshSat panel button: held down 10 s, a latching switch: in = armed, out = disarmed from now on");
         break;
+    case meshsat::ArmEvent::DisarmedByButton:
+    case meshsat::ArmEvent::DisarmedIdle:
+    case meshsat::ArmEvent::DisarmedLimit: {
+        LOG_INFO("MeshSat panel button: %s", meshsat::armEventText(ev));
+        const meshsat::BeaconOffReason why =
+            ev == meshsat::ArmEvent::DisarmedIdle
+                ? meshsat::BeaconOffReason::Idle
+                : (ev == meshsat::ArmEvent::DisarmedLimit ? meshsat::BeaconOffReason::Limit : meshsat::BeaconOffReason::Switch);
+        const bool handed = iridiumImtModule && iridiumImtModule->beaconHandedCount() != beaconHandedAtArm;
+        if (beacon.onDisarmed(now, why, handed)) {
+            if (iridiumImtModule)
+                iridiumImtModule->dropBeaconTexts();
+            LOG_INFO("MeshSat beacon: off before any message reached the modem, nothing sent");
+        } else if (handed) {
+            LOG_INFO("MeshSat beacon: off (%s); the modem stays up for the last message, %u s at most",
+                     meshsat::beaconOffReasonText(why), static_cast<unsigned>(meshsat::BeaconTimes().drainMs / 1000));
+        }
+        break;
+    }
+    case meshsat::ArmEvent::DisarmedCellLow:
+        LOG_INFO("MeshSat panel button: %s", meshsat::armEventText(ev));
+        beacon.onCellLow();
+        if (iridiumImtModule)
+            iridiumImtModule->dropBeaconTexts();
+        LOG_WARN("MeshSat beacon: off, the cell is too low for the modem; nothing more sent");
+        break;
     default:
         LOG_INFO("MeshSat panel button: %s", meshsat::armEventText(ev));
         break;
     }
+}
+
+void IridiumPipe::sampleFix(uint32_t now)
+{
+    if (lastFixSampleMs != 0 && now - lastFixSampleMs < FIX_SAMPLE_MS)
+        return;
+    lastFixSampleMs = now == 0 ? 1 : now;
+    const int32_t lat = localPosition.latitude_i;
+    const int32_t lon = localPosition.longitude_i;
+    if (lat == 0 && lon == 0)
+        return;
+    // A new fix is a new position or a new report time; the same report seen again keeps its age.
+    const uint32_t reportTime = localPosition.time;
+    if (!fixHave || lat != fixLatitudeI || lon != fixLongitudeI || reportTime != fixReportTime) {
+        fixHave = true;
+        fixLatitudeI = lat;
+        fixLongitudeI = lon;
+        fixSeenMs = now;
+        fixReportTime = reportTime;
+    }
+    fixManual = config.position.fixed_position || localPosition.location_source == meshtastic_Position_LocSource_LOC_MANUAL;
+}
+
+bool IridiumPipe::beaconSettled() const
+{
+    return (!iridiumImtModule || iridiumImtModule->beaconWaitingCount() == 0) && stat.moInModem == 0;
+}
+
+bool IridiumPipe::beaconHoldsModem(uint32_t now) const
+{
+    return beacon.holdsModem(now, beaconSettled());
+}
+
+void IridiumPipe::runBeacon(uint32_t now)
+{
+    sampleFix(now);
+    const meshsat::BeaconKind kind = beacon.due(now);
+    if (kind != meshsat::BeaconKind::None) {
+        meshsat::BeaconFix fix;
+        fix.have = fixHave;
+        fix.latitudeI = fixLatitudeI;
+        fix.longitudeI = fixLongitudeI;
+        fix.ageS = (now - fixSeenMs) / 1000;
+        fix.manual = fixManual;
+        char text[200];
+        const int n = meshsat::formatBeaconText(text, sizeof(text), MESHSAT_BEACON_CONTACT, kind, beacon.lastOffReason(), fix);
+        if (n <= 0 || static_cast<size_t>(n) >= sizeof(text) || !iridiumImtModule || !iridiumImtModule->queueNodeText(text, true))
+            LOG_WARN("MeshSat beacon: message could not be queued");
+        // Taken either way: a message that cannot be queued now is not retried in a tight loop.
+        beacon.taken(now, kind);
+    }
+    const bool settled = beaconSettled();
+    if (beacon.finishDrain(now, settled))
+        LOG_INFO("MeshSat beacon: %s; the modem is shut down",
+                 settled ? "the last message is out" : "the last message did not get out in time");
 }
 
 void IridiumPipe::runArming(uint32_t now)
@@ -518,6 +630,21 @@ bool IridiumPipe::satelliteArmed() const
 {
     return false;
 }
+
+bool IridiumPipe::beaconOn() const
+{
+    return false;
+}
+
+bool IridiumPipe::beaconDraining() const
+{
+    return false;
+}
+
+uint32_t IridiumPipe::beaconNextInMs() const
+{
+    return 0;
+}
 #endif
 
 void IridiumPipe::sampleCell(uint32_t now)
@@ -545,6 +672,13 @@ void IridiumPipe::startModem(uint32_t now, bool railAlreadyOn)
         LOG_INFO("MeshSat Iridium: modem already on at boot; it may be mid-start, guard restarted, nothing toggled");
     } else {
         powerModem(true);
+        // The 9704 keeps no queue across its own restart (unit 0001, 24 Oct 2026): what was counted in it is gone.
+        if (stat.moInModem > 0) {
+            LOG_INFO("MeshSat Iridium: %u message(s) counted in the modem are gone with its restart", (unsigned)stat.moInModem);
+            stat.moInModem = 0;
+            queueMemory.magic = QUEUE_MEMORY_MAGIC;
+            queueMemory.inModem = 0;
+        }
     }
     modemPowerState = IridiumModemPower::Starting;
     stat.modemAnswered = false;
@@ -631,7 +765,15 @@ void IridiumPipe::runModemPower(uint32_t now)
     // a stop reason of its own. Before this unit's first press the button changes nothing.
     if (cellLow && arming.armed())
         noteArmEvent(arming.disarmForCell(), now);
-    const bool disarmed = arming.active() && !arming.armed();
+    if (cellLow && beacon.isDraining()) {
+        beacon.onCellLow();
+        if (iridiumImtModule)
+            iridiumImtModule->dropBeaconTexts();
+        LOG_WARN("MeshSat beacon: the cell is too low for the modem; the last message is not sent");
+    }
+    // The beacon's last message keeps a running modem up after the switch-off; it never starts a stopped one.
+    const bool disarmed =
+        arming.active() && !arming.armed() && !(modemPowerState != IridiumModemPower::Inhibited && beaconHoldsModem(now));
 #else
     const bool disarmed = false;
 #endif
@@ -1043,6 +1185,7 @@ void IridiumPipe::onPhoneWrite(const uint8_t *data, size_t length)
 {
     if (!incoming || !data || length == 0)
         return;
+    lastPhoneWriteMs.store(millis());
     const size_t sent = xStreamBufferSend(incoming, data, length, 0);
     if (sent < length)
         phoneBytesDropped.fetch_add(static_cast<uint32_t>(length - sent));
@@ -1093,6 +1236,7 @@ int32_t IridiumPipe::runOnce()
 #if MESHSAT_IRIDIUM_JSPR
 #if defined(MESHSAT_PANEL_BUTTON_PIN) && defined(MESHSAT_IRIDIUM_ENABLE_PIN)
     runArming(millis());
+    runBeacon(millis());
 #endif
     runModemPower(millis());
     if (!uartOpen) {
@@ -1136,6 +1280,21 @@ void IridiumPipe::updateOwner()
 
     const IridiumModemOwner owner = currentOwner.load();
     if (phoneSubscribed.load()) {
+#if MESHSAT_IRIDIUM_JSPR && defined(MESHSAT_PANEL_BUTTON_PIN) && defined(MESHSAT_IRIDIUM_ENABLE_PIN)
+        // A beacon text waiting goes first (MESHSAT-1667): the phone keeps the modem until it has been quiet a few
+        // seconds, then lends it to the node, which gives it back once the text is in the modem.
+        if (iridiumImtModule && iridiumImtModule->beaconWaitingCount() > 0) {
+            const uint32_t quietMs = Throttle::hasElapsed(iridiumImtModule->beaconWaitingSinceMs(), BEACON_PHONE_PATIENCE_MS)
+                                         ? BEACON_PHONE_GAP_MS
+                                         : BEACON_PHONE_QUIET_MS;
+            if (owner == IridiumModemOwner::Phone && !stat.sessionInFlight && pendingLength == 0 &&
+                (!incoming || xStreamBufferIsEmpty(incoming)) && Throttle::hasElapsed(lastPhoneWriteMs.load(), quietMs)) {
+                setOwner(IridiumModemOwner::None);
+                LOG_INFO("MeshSat Iridium: the phone lends the modem to the beacon");
+            }
+            return;
+        }
+#endif
         if (owner == IridiumModemOwner::None) {
             if (healthAwaiting) {
                 // The probe's reply must not land in the phone's first command.

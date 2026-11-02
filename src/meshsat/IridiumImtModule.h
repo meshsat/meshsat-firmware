@@ -36,6 +36,18 @@ class IridiumImtModule : public SinglePortModule, private concurrency::OSThread
     // Texts waiting on the node for the modem (not yet handed over).
     size_t waitingCount() const { return queueCount; }
 
+    // A text the node writes itself (the satellite beacon, MESHSAT-1667), queued like a mesh text. A beacon text
+    // waiting here takes the modem from a phone between its requests, and goes out before the node gives it back.
+    bool queueNodeText(const char *text, bool beacon);
+    // Beacon texts waiting on the node, the one being handed to the modem included.
+    size_t beaconWaitingCount() const;
+    // Drops the beacon texts not yet being handed to the modem (the beacon was switched off before any went out).
+    void dropBeaconTexts();
+    // Beacon texts the modem has taken since boot.
+    uint32_t beaconHandedCount() const { return beaconHanded; }
+    // When the oldest beacon text waiting was queued (0 when none waits).
+    uint32_t beaconWaitingSinceMs() const;
+
   protected:
     ProcessMessage handleReceived(const meshtastic_MeshPacket &mp) override;
     int32_t runOnce() override;
@@ -78,11 +90,17 @@ class IridiumImtModule : public SinglePortModule, private concurrency::OSThread
         uint32_t queuedMs;
         uint32_t from;
         uint8_t attempts;
+        bool beacon;
     };
 
     bool isIridiumChannel(uint8_t channelIndex) const;
     int8_t iridiumChannelIndex() const;
     void enqueue(const meshtastic_MeshPacket &mp);
+    // A free slot at the tail; when the queue is full the oldest mesh text goes first, a beacon text only if
+    // nothing else is left. Never the head while it is being handed to the modem.
+    Outbound *takeTailSlot();
+    void removeAt(size_t position);
+    bool headInFlight() const { return state == State::Originating || state == State::Sending; }
     void popOutbound();
 
     void takeOrReleaseModem();
@@ -128,6 +146,7 @@ class IridiumImtModule : public SinglePortModule, private concurrency::OSThread
     uint32_t sentAsNode = 0;
     uint32_t receivedAsNode = 0;
     uint32_t failedAsNode = 0;
+    uint32_t beaconHanded = 0;
 };
 
 extern IridiumImtModule *iridiumImtModule;

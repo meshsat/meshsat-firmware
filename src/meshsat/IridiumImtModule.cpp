@@ -160,20 +160,108 @@ void IridiumImtModule::enqueue(const meshtastic_MeshPacket &mp)
                  (unsigned)length);
         return;
     }
-    if (queueCount == QUEUE_SLOTS) {
-        LOG_WARN("MeshSat Iridium: outbound queue full, dropping the oldest text");
-        popOutbound();
-    }
-    Outbound &slot = queue[(queueHead + queueCount) % QUEUE_SLOTS];
+    Outbound *slot = takeTailSlot();
+    if (!slot)
+        return;
     // Plain UTF-8 text, as the Hub reads a RockBLOCK message with no envelope.
-    memcpy(slot.bytes, mp.decoded.payload.bytes, length);
-    slot.length = static_cast<uint16_t>(length);
-    slot.queuedMs = millis();
-    slot.from = mp.from;
-    slot.attempts = 0;
+    memcpy(slot->bytes, mp.decoded.payload.bytes, length);
+    slot->length = static_cast<uint16_t>(length);
+    slot->queuedMs = millis();
+    slot->from = mp.from;
+    slot->attempts = 0;
+    slot->beacon = false;
     queueCount++;
     LOG_INFO("MeshSat Iridium: text from 0x%08x on \"%s\" queued for satellite (%u B, %u waiting)", (unsigned)mp.from,
              MESHSAT_IRIDIUM_CHANNEL_NAME, (unsigned)length, (unsigned)queueCount);
+}
+
+bool IridiumImtModule::queueNodeText(const char *text, bool beacon)
+{
+    const size_t length = text ? strlen(text) : 0;
+    if (length == 0 || length > MO_MAX_BYTES) {
+        LOG_WARN("MeshSat Iridium: the node's own text of %u B does not fit a message, dropped", (unsigned)length);
+        return false;
+    }
+    Outbound *slot = takeTailSlot();
+    if (!slot)
+        return false;
+    memcpy(slot->bytes, text, length);
+    slot->length = static_cast<uint16_t>(length);
+    slot->queuedMs = millis();
+    slot->from = nodeDB ? nodeDB->getNodeNum() : 0;
+    slot->attempts = 0;
+    slot->beacon = beacon;
+    queueCount++;
+    LOG_INFO("MeshSat Iridium: %s queued for satellite (%u B, %u waiting): %.60s", beacon ? "beacon" : "node text",
+             (unsigned)length, (unsigned)queueCount, text);
+    return true;
+}
+
+size_t IridiumImtModule::beaconWaitingCount() const
+{
+    size_t n = 0;
+    for (size_t i = 0; i < queueCount; ++i)
+        if (queue[(queueHead + i) % QUEUE_SLOTS].beacon)
+            n++;
+    return n;
+}
+
+uint32_t IridiumImtModule::beaconWaitingSinceMs() const
+{
+    for (size_t i = 0; i < queueCount; ++i) {
+        const Outbound &slot = queue[(queueHead + i) % QUEUE_SLOTS];
+        if (slot.beacon)
+            return slot.queuedMs == 0 ? 1 : slot.queuedMs;
+    }
+    return 0;
+}
+
+void IridiumImtModule::dropBeaconTexts()
+{
+    size_t i = headInFlight() ? 1 : 0;
+    size_t dropped = 0;
+    while (i < queueCount) {
+        if (queue[(queueHead + i) % QUEUE_SLOTS].beacon) {
+            removeAt(i);
+            dropped++;
+        } else {
+            i++;
+        }
+    }
+    if (dropped > 0)
+        LOG_INFO("MeshSat Iridium: %u beacon text(s) dropped before they reached the modem", (unsigned)dropped);
+}
+
+IridiumImtModule::Outbound *IridiumImtModule::takeTailSlot()
+{
+    if (queueCount == QUEUE_SLOTS) {
+        const size_t first = headInFlight() ? 1 : 0;
+        size_t victim = QUEUE_SLOTS;
+        for (size_t i = first; i < queueCount && victim == QUEUE_SLOTS; ++i)
+            if (!queue[(queueHead + i) % QUEUE_SLOTS].beacon)
+                victim = i;
+        if (victim == QUEUE_SLOTS)
+            victim = first;
+        if (victim >= queueCount)
+            return nullptr;
+        LOG_WARN("MeshSat Iridium: outbound queue full, dropping the oldest %s",
+                 queue[(queueHead + victim) % QUEUE_SLOTS].beacon ? "beacon text" : "text");
+        removeAt(victim);
+    }
+    return &queue[(queueHead + queueCount) % QUEUE_SLOTS];
+}
+
+void IridiumImtModule::removeAt(size_t position)
+{
+    if (position >= queueCount)
+        return;
+    if (position == 0) {
+        popOutbound();
+        return;
+    }
+    for (size_t i = position; i + 1 < queueCount; ++i)
+        queue[(queueHead + i) % QUEUE_SLOTS] = queue[(queueHead + i + 1) % QUEUE_SLOTS];
+    queueCount--;
 }
 
 void IridiumImtModule::popOutbound()
@@ -219,8 +307,10 @@ void IridiumImtModule::takeOrReleaseModem()
     IridiumPipe *pipe = IridiumPipe::instance();
     if (!pipe)
         return;
+    // A beacon text waiting goes before a phone: the pipe takes the modem from it between its requests.
+    const bool beaconFirst = beaconWaitingCount() > 0;
     if (state == State::Off) {
-        if (pipe->phoneWantsModem() || pipe->owner() != IridiumModemOwner::None)
+        if ((pipe->phoneWantsModem() && !beaconFirst) || pipe->owner() != IridiumModemOwner::None)
             return;
         // Only a modem the pipe has brought up and heard from.
         if (pipe->modemPower() != IridiumModemPower::Running || !pipe->stats().modemAnswered)
@@ -231,7 +321,7 @@ void IridiumImtModule::takeOrReleaseModem()
 #else
         const bool bootGrace = !Throttle::hasElapsed(0, PHONE_GRACE_MS);
 #endif
-        if (bootGrace || (lastRelease != 0 && !Throttle::hasElapsed(lastRelease, PHONE_GRACE_MS)))
+        if (!beaconFirst && (bootGrace || (lastRelease != 0 && !Throttle::hasElapsed(lastRelease, PHONE_GRACE_MS))))
             return;
         if (!pipe->tryAcquireForNode())
             return;
@@ -240,7 +330,7 @@ void IridiumImtModule::takeOrReleaseModem()
         return;
     }
     // A client gets the modem between requests, never while a message is being handed to the modem.
-    if (!pipe->phoneWantsModem() || state == State::Originating || state == State::Sending)
+    if (!pipe->phoneWantsModem() || beaconFirst || state == State::Originating || state == State::Sending)
         return;
     release("client asked for it");
 }
@@ -498,7 +588,10 @@ void IridiumImtModule::onResponse(int code, const char *target, const char *json
         }
         inFlightMessageId = moMessageId;
         moMessageId = -1;
-        LOG_INFO("MeshSat Iridium: message %d is in the modem; it goes out when the sky is there", inFlightMessageId);
+        if (queueCount > 0 && queue[queueHead].beacon)
+            beaconHanded++;
+        LOG_INFO("MeshSat Iridium: %s %d is in the modem; it goes out when the sky is there",
+                 queueCount > 0 && queue[queueHead].beacon ? "beacon message" : "message", inFlightMessageId);
         popOutbound();
         state = State::Idle;
         return;
@@ -660,8 +753,8 @@ int32_t IridiumImtModule::runOnce()
     }
     if (state != State::Idle)
         return POLL_BUSY_MS;
-    // The hand-over runs at the top of the next run.
-    if (pipe->phoneWantsModem())
+    // The hand-over runs at the top of the next run, once no beacon text is waiting.
+    if (pipe->phoneWantsModem() && beaconWaitingCount() == 0)
         return POLL_BUSY_MS;
     if (queueCount > 0 && (queue[queueHead].attempts == 0 || Throttle::hasElapsed(lastAttemptMs, ATTEMPT_GAP_MS))) {
         startOriginate();

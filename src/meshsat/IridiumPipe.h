@@ -6,6 +6,7 @@
 
 #include "Observer.h"
 #include "concurrency/OSThread.h"
+#include "meshsat/SatBeacon.h"
 #include "meshsat/SatelliteArming.h"
 
 #include <atomic>
@@ -145,6 +146,11 @@ class IridiumPipe : private concurrency::OSThread
     // while armed. Without a button, or before its first press, the modem runs as it always did.
     bool panelButtonActive() const;
     bool satelliteArmed() const;
+    // The satellite beacon (MESHSAT-1667): on while the satellite is armed; draining while its last message goes out
+    // after the switch-off; the time to its next position message while on.
+    bool beaconOn() const;
+    bool beaconDraining() const;
+    uint32_t beaconNextInMs() const;
     bool sessionInFlight() const { return sessionInFlightFlag.load(); }
     const IridiumStats &stats() const { return stat; }
 
@@ -201,6 +207,8 @@ class IridiumPipe : private concurrency::OSThread
     std::atomic<bool> phoneSubscribed{false};
     std::atomic<uint16_t> phoneConnHandle{0};
     std::atomic<uint32_t> lastUnsubscribeMs{0};
+    // When the phone last wrote to the modem: the beacon takes the modem from a phone only after a quiet spell.
+    std::atomic<uint32_t> lastPhoneWriteMs{0};
     std::atomic<uint32_t> phoneBytesDropped{0};
     std::atomic<uint32_t> foreignSubscribes{0};
     std::atomic<bool> sessionInFlightFlag{false};
@@ -259,6 +267,24 @@ class IridiumPipe : private concurrency::OSThread
     void runArming(uint32_t now);
     void noteArmEvent(meshsat::ArmEvent ev, uint32_t now);
     bool cellAllowsArming() const;
+    // The satellite beacon rides on the arming (MESHSAT-1667).
+    meshsat::SatBeacon beacon;
+    // The IMT module's beacon hand-over count when the satellite was armed: a higher count at the switch-off means a
+    // beacon message of this arming reached the modem.
+    uint32_t beaconHandedAtArm = 0;
+    // The last position the node has seen, kept through a lost GPS lock (Meshtastic zeroes its own on that).
+    bool fixHave = false;
+    bool fixManual = false;
+    int32_t fixLatitudeI = 0;
+    int32_t fixLongitudeI = 0;
+    uint32_t fixSeenMs = 0;
+    uint32_t fixReportTime = 0;
+    uint32_t lastFixSampleMs = 0;
+    void sampleFix(uint32_t now);
+    void runBeacon(uint32_t now);
+    // True while the beacon keeps a disarmed modem up for its last message.
+    bool beaconHoldsModem(uint32_t now) const;
+    bool beaconSettled() const;
 #endif
 #ifdef MESHSAT_IRIDIUM_ENABLE_PIN
     // I_EN is low and I_BTD has not confirmed the shutdown yet: I_EN stays low until it does.
