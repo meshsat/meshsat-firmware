@@ -23,6 +23,12 @@ static constexpr uint32_t REQUEST_TIMEOUT_MS = 10 * 1000UL;
 // The modem asks for the payload right after it accepts a message, and gives up within about 360 ms.
 static constexpr uint32_t SEGMENT_WAIT_MS = 5 * 1000UL;
 static constexpr uint32_t ATTEMPT_GAP_MS = 60 * 1000UL;
+// JSPR 418 "operation not possible in current state": on unit 0001 (2 Nov 2026) the modem answered it to a
+// messageOriginate sent right after its 200 to PUT operationalState active, before its 299 operationalState active.
+static constexpr int JSPR_WRONG_STATE = 418;
+static constexpr uint32_t STATE_RETRY_MS = 3 * 1000UL;
+static constexpr uint8_t STATE_REFUSALS_TO_REINIT = 5;
+static constexpr uint32_t ACTIVE_SETTLE_MS = 3 * 1000UL;
 static constexpr uint8_t ATTEMPTS_MAX = 5;
 static constexpr uint32_t QUEUE_MAX_AGE_MS = 30 * 60 * 1000UL;
 // A client that just dropped is first in line, and so is one about to connect after a boot where nothing
@@ -371,6 +377,8 @@ void IridiumImtModule::send(Request what, const char *method, const char *target
 void IridiumImtModule::startInit()
 {
     initRetries = 0;
+    awaitingActive = false;
+    stateRefusals = 0;
     lineLength = 0;
     lineOverflow = false;
     moMessageId = -1;
@@ -409,6 +417,20 @@ void IridiumImtModule::originateFailed(int code)
     lastAttemptMs = millis();
     if (queueCount == 0)
         return;
+    if (code == JSPR_WRONG_STATE) {
+        // The modem is not in a state to take a message yet; not the text's fault, so no attempt is used up. Some
+        // refusals in a row and the modem is set up again.
+        if (++stateRefusals >= STATE_REFUSALS_TO_REINIT) {
+            LOG_WARN("MeshSat Iridium: the modem refused %u times for its state (418), setting it up again",
+                     (unsigned)stateRefusals);
+            startInit();
+            return;
+        }
+        stateRetry = true;
+        LOG_WARN("MeshSat Iridium: the modem is not ready for a message (418), retry in %u s", (unsigned)(STATE_RETRY_MS / 1000));
+        return;
+    }
+    stateRetry = false;
     Outbound &slot = queue[queueHead];
     slot.attempts++;
     if (slot.attempts >= ATTEMPTS_MAX) {
@@ -555,6 +577,7 @@ void IridiumImtModule::onResponse(int code, const char *target, const char *json
         char value[16];
         if (code == 200 && jsonString(json, "state", value, sizeof(value)) && strcmp(value, "active") == 0) {
             state = State::Idle;
+            awaitingActive = false;
             LOG_INFO("MeshSat Iridium: 9704 up and active, the node routes \"%s\"", MESHSAT_IRIDIUM_CHANNEL_NAME);
             return;
         }
@@ -567,6 +590,8 @@ void IridiumImtModule::onResponse(int code, const char *target, const char *json
             return;
         }
         state = State::Idle;
+        awaitingActive = true;
+        activeRequestedMs = millis();
         LOG_INFO("MeshSat Iridium: 9704 up and set active, the node routes \"%s\"", MESHSAT_IRIDIUM_CHANNEL_NAME);
         return;
     case Request::Originate: {
@@ -588,6 +613,8 @@ void IridiumImtModule::onResponse(int code, const char *target, const char *json
         }
         inFlightMessageId = moMessageId;
         moMessageId = -1;
+        stateRefusals = 0;
+        stateRetry = false;
         if (queueCount > 0 && queue[queueHead].beacon)
             beaconHanded++;
         LOG_INFO("MeshSat Iridium: %s %d is in the modem; it goes out when the sky is there",
@@ -614,6 +641,15 @@ void IridiumImtModule::onEvent(const char *target, const char *json)
                 pipe->noteSignal(bars > 5 ? 5 : (bars < 0 ? 0 : static_cast<int>(bars)));
         }
         LOG_DEBUG("MeshSat Iridium: constellation %s, %ld bars", visible ? "visible" : "not visible", bars);
+        return;
+    }
+    if (strcmp(target, "operationalState") == 0) {
+        char value[16];
+        if (jsonString(json, "state", value, sizeof(value)) && strcmp(value, "active") == 0 && awaitingActive) {
+            awaitingActive = false;
+            LOG_DEBUG("MeshSat Iridium: the modem reports active %u ms after the request",
+                      (unsigned)(millis() - activeRequestedMs));
+        }
         return;
     }
     if (strcmp(target, "messageOriginateSegment") == 0) {
@@ -756,9 +792,19 @@ int32_t IridiumImtModule::runOnce()
     // The hand-over runs at the top of the next run, once no beacon text is waiting.
     if (pipe->phoneWantsModem() && beaconWaitingCount() == 0)
         return POLL_BUSY_MS;
-    if (queueCount > 0 && (queue[queueHead].attempts == 0 || Throttle::hasElapsed(lastAttemptMs, ATTEMPT_GAP_MS))) {
-        startOriginate();
-        return POLL_BUSY_MS;
+    if (awaitingActive) {
+        if (!Throttle::hasElapsed(activeRequestedMs, ACTIVE_SETTLE_MS))
+            return POLL_BUSY_MS;
+        awaitingActive = false;
+    }
+    if (queueCount > 0) {
+        const bool due = stateRetry ? Throttle::hasElapsed(lastAttemptMs, STATE_RETRY_MS)
+                                    : (queue[queueHead].attempts == 0 || Throttle::hasElapsed(lastAttemptMs, ATTEMPT_GAP_MS));
+        if (due) {
+            stateRetry = false;
+            startOriginate();
+            return POLL_BUSY_MS;
+        }
     }
     return POLL_IDLE_MS;
 }

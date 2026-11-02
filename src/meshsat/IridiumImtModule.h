@@ -127,6 +127,13 @@ class IridiumImtModule : public SinglePortModule, private concurrency::OSThread
     size_t queueHead = 0;
     size_t queueCount = 0;
     uint32_t lastAttemptMs = 0;
+    // A head refused for the modem's state (JSPR 418) is retried after STATE_RETRY_MS without using up an attempt.
+    bool stateRetry = false;
+    uint8_t stateRefusals = 0;
+    // Set active, the modem refuses a message (418) until its own operationalState event says active: no send
+    // before that event, or ACTIVE_SETTLE_MS after the PUT at most.
+    bool awaitingActive = false;
+    uint32_t activeRequestedMs = 0;
 
     char line[LINE_BYTES];
     size_t lineLength = 0;
