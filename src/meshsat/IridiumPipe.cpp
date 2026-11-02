@@ -8,6 +8,7 @@
 #include "PowerStatus.h"
 #include "mesh/Throttle.h"
 #include "meshsat/BleWatchdog.h"
+#include "meshsat/ChargeGuardThread.h"
 #include "meshsat/DownReason.h"
 #include "meshsat/IridiumImtModule.h"
 #include "meshsat/IridiumModule.h"
@@ -214,6 +215,9 @@ void IridiumPipe::begin()
         return;
     meshsat::loadDownReason();
     meshsat::loadNodeControl();
+#if defined(MESHSAT_CHARGE_GUARD) && defined(HAS_PMU)
+    meshsat::startChargeGuard();
+#endif
     incoming = xStreamBufferCreateStatic(INCOMING_BYTES, 1, incomingStorage, &incomingControl);
     pipeInstance = new IridiumPipe();
     pipeInstance->deepSleepObserver.observe(&notifyDeepSleep);

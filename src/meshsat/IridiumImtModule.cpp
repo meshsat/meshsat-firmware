@@ -7,6 +7,7 @@
 #include "NodeDB.h"
 #include "main.h"
 #include "mesh/Throttle.h"
+#include "meshsat/ChargeGuardThread.h"
 #include "meshsat/IridiumPipe.h"
 #include "meshsat/Smaz2.h"
 
@@ -29,6 +30,8 @@ static constexpr int JSPR_WRONG_STATE = 418;
 static constexpr uint32_t STATE_RETRY_MS = 3 * 1000UL;
 static constexpr uint8_t STATE_REFUSALS_TO_REINIT = 5;
 static constexpr uint32_t ACTIVE_SETTLE_MS = 3 * 1000UL;
+// How often the node asks the modem for its board temperature while it holds the modem (charge guard, MESHSAT-1774).
+static constexpr uint32_t HWINFO_EVERY_MS = 5 * 60 * 1000UL;
 static constexpr uint8_t ATTEMPTS_MAX = 5;
 static constexpr uint32_t QUEUE_MAX_AGE_MS = 30 * 60 * 1000UL;
 // A client that just dropped is first in line, and so is one about to connect after a boot where nothing
@@ -336,7 +339,8 @@ void IridiumImtModule::takeOrReleaseModem()
         return;
     }
     // A client gets the modem between requests, never while a message is being handed to the modem.
-    if (!pipe->phoneWantsModem() || beaconFirst || state == State::Originating || state == State::Sending)
+    if (!pipe->phoneWantsModem() || beaconFirst || state == State::Originating || state == State::Sending ||
+        pending != Request::None)
         return;
     release("client asked for it");
 }
@@ -379,6 +383,7 @@ void IridiumImtModule::startInit()
     initRetries = 0;
     awaitingActive = false;
     stateRefusals = 0;
+    lastHwInfoMs = 0;
     lineLength = 0;
     lineOverflow = false;
     moMessageId = -1;
@@ -622,6 +627,16 @@ void IridiumImtModule::onResponse(int code, const char *target, const char *json
         popOutbound();
         state = State::Idle;
         return;
+    case Request::GetHwInfo: {
+        long boardC = 0;
+        if (code == 200 && jsonInt(json, "board_temp", boardC)) {
+            LOG_DEBUG("MeshSat Iridium: 9704 board %ld C", boardC);
+#if defined(MESHSAT_CHARGE_GUARD) && defined(HAS_PMU)
+            meshsat::chargeGuardNoteModemC(static_cast<float>(boardC));
+#endif
+        }
+        return;
+    }
     case Request::None:
         LOG_DEBUG("MeshSat Iridium: unexpected %d %s", code, target);
         return;
@@ -789,6 +804,9 @@ int32_t IridiumImtModule::runOnce()
     }
     if (state != State::Idle)
         return POLL_BUSY_MS;
+    // A request out in Idle (hwInfo) is answered before anything else goes to the modem.
+    if (pending != Request::None)
+        return POLL_BUSY_MS;
     // The hand-over runs at the top of the next run, once no beacon text is waiting.
     if (pipe->phoneWantsModem() && beaconWaitingCount() == 0)
         return POLL_BUSY_MS;
@@ -797,6 +815,14 @@ int32_t IridiumImtModule::runOnce()
             return POLL_BUSY_MS;
         awaitingActive = false;
     }
+#if defined(MESHSAT_CHARGE_GUARD) && defined(HAS_PMU)
+    // The modem's board temperature for the charge guard, only while nothing waits to go out.
+    if (queueCount == 0 && (lastHwInfoMs == 0 || Throttle::hasElapsed(lastHwInfoMs, HWINFO_EVERY_MS))) {
+        lastHwInfoMs = millis() == 0 ? 1 : millis();
+        send(Request::GetHwInfo, "GET", "hwInfo", "{}");
+        return POLL_BUSY_MS;
+    }
+#endif
     if (queueCount > 0) {
         const bool due = stateRetry ? Throttle::hasElapsed(lastAttemptMs, STATE_RETRY_MS)
                                     : (queue[queueHead].attempts == 0 || Throttle::hasElapsed(lastAttemptMs, ATTEMPT_GAP_MS));

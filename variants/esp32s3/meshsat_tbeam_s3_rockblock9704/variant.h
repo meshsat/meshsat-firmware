@@ -28,3 +28,6 @@
 // press edge arms the satellite; a latching switch's release disarms it, a momentary switch's second press does.
 // Inactive until the first press this unit has seen (kept in NVS): with no button wired the modem runs as before.
 #define MESHSAT_PANEL_BUTTON_PIN 38
+// The charge temperature guard (MESHSAT-1774, CE technical file R14 without a cell sensor): the AXP2101 charges only
+// while the charger chip and, when it runs, the 9704 read inside 10 to 35 C (src/meshsat/ChargeGuard.h).
+#define MESHSAT_CHARGE_GUARD 1

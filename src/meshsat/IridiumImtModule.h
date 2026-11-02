@@ -75,6 +75,8 @@ class IridiumImtModule : public SinglePortModule, private concurrency::OSThread
         PutOperationalState,
         Originate,
         Segment,
+        // The modem's board temperature for the charge guard (MESHSAT-1774).
+        GetHwInfo,
     };
 
     // A mesh text is at most 233 bytes; two checksum bytes follow it on the wire.
@@ -134,6 +136,8 @@ class IridiumImtModule : public SinglePortModule, private concurrency::OSThread
     // before that event, or ACTIVE_SETTLE_MS after the PUT at most.
     bool awaitingActive = false;
     uint32_t activeRequestedMs = 0;
+    // When the node last asked the modem for hwInfo (its board temperature, for the charge guard).
+    uint32_t lastHwInfoMs = 0;
 
     char line[LINE_BYTES];
     size_t lineLength = 0;
