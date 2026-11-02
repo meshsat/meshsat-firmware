@@ -463,6 +463,25 @@ uint32_t IridiumPipe::beaconNextInMs() const
     return beacon.nextInMs(millis());
 }
 
+void IridiumPipe::putBeaconStats(uint8_t *out, size_t &at) const
+{
+    // 52: 0 not in use (the switch never pressed on this node), 1 off, 2 on, 3 off and sending its last message.
+    out[at++] = !arming.active() ? 0 : (beacon.on() ? 2 : (beacon.isDraining() ? 3 : 1));
+    out[at++] = beaconLastOffCode;
+    const uint32_t handed = iridiumImtModule ? iridiumImtModule->beaconHandedCount() : 0;
+    const uint16_t handed16 = handed > 0xFFFF ? 0xFFFF : static_cast<uint16_t>(handed);
+    out[at++] = static_cast<uint8_t>(handed16 & 0xFF);
+    out[at++] = static_cast<uint8_t>(handed16 >> 8);
+    for (int i = 0; i < 4; ++i)
+        out[at++] = static_cast<uint8_t>((beaconOnUptimeS >> (8 * i)) & 0xFF);
+    const uint16_t interval = static_cast<uint16_t>(meshsat::BeaconTimes().intervalMs / 1000);
+    const uint16_t limit = static_cast<uint16_t>(meshsat::ArmingTimes().limitMs / 1000);
+    out[at++] = static_cast<uint8_t>(interval & 0xFF);
+    out[at++] = static_cast<uint8_t>(interval >> 8);
+    out[at++] = static_cast<uint8_t>(limit & 0xFF);
+    out[at++] = static_cast<uint8_t>(limit >> 8);
+}
+
 bool IridiumPipe::panelButtonActive() const
 {
     return arming.active();
@@ -517,6 +536,7 @@ void IridiumPipe::noteArmEvent(meshsat::ArmEvent ev, uint32_t now)
                  MESHSAT_BEACON_CONTACT);
         beaconHandedAtArm = iridiumImtModule ? iridiumImtModule->beaconHandedCount() : 0;
         beacon.onArmed(now);
+        beaconOnUptimeS = now / 1000;
         break;
     case meshsat::ArmEvent::RefusedCellLow:
         LOG_WARN("MeshSat panel button: not armed, the cell is under %d mV", MESHSAT_IRIDIUM_CELL_ON_MV);
@@ -533,6 +553,10 @@ void IridiumPipe::noteArmEvent(meshsat::ArmEvent ev, uint32_t now)
                 ? meshsat::BeaconOffReason::Idle
                 : (ev == meshsat::ArmEvent::DisarmedLimit ? meshsat::BeaconOffReason::Limit : meshsat::BeaconOffReason::Switch);
         const bool handed = iridiumImtModule && iridiumImtModule->beaconHandedCount() != beaconHandedAtArm;
+        if (!handed)
+            beaconLastOffCode = 5;
+        else
+            beaconLastOffCode = why == meshsat::BeaconOffReason::Idle ? 2 : (why == meshsat::BeaconOffReason::Limit ? 3 : 1);
         if (beacon.onDisarmed(now, why, handed)) {
             if (iridiumImtModule)
                 iridiumImtModule->dropBeaconTexts();
@@ -545,6 +569,7 @@ void IridiumPipe::noteArmEvent(meshsat::ArmEvent ev, uint32_t now)
     }
     case meshsat::ArmEvent::DisarmedCellLow:
         LOG_INFO("MeshSat panel button: %s", meshsat::armEventText(ev));
+        beaconLastOffCode = 4;
         beacon.onCellLow();
         if (iridiumImtModule)
             iridiumImtModule->dropBeaconTexts();
@@ -658,6 +683,17 @@ bool IridiumPipe::beaconDraining() const
 uint32_t IridiumPipe::beaconNextInMs() const
 {
     return 0;
+}
+
+void IridiumPipe::putBeaconStats(uint8_t *out, size_t &at) const
+{
+    // No panel switch in this build: beacon not in use, never on.
+    for (int i = 0; i < 4; ++i)
+        out[at++] = 0;
+    for (int i = 0; i < 4; ++i)
+        out[at++] = 0xFF;
+    for (int i = 0; i < 4; ++i)
+        out[at++] = 0;
 }
 #endif
 
@@ -780,6 +816,7 @@ void IridiumPipe::runModemPower(uint32_t now)
     if (cellLow && arming.armed())
         noteArmEvent(arming.disarmForCell(), now);
     if (cellLow && beacon.isDraining()) {
+        beaconLastOffCode = 4;
         beacon.onCellLow();
         if (iridiumImtModule)
             iridiumImtModule->dropBeaconTexts();
@@ -947,6 +984,32 @@ bool IridiumPipe::satelliteArmed() const
 {
     return false;
 }
+
+bool IridiumPipe::beaconOn() const
+{
+    return false;
+}
+
+bool IridiumPipe::beaconDraining() const
+{
+    return false;
+}
+
+uint32_t IridiumPipe::beaconNextInMs() const
+{
+    return 0;
+}
+
+void IridiumPipe::putBeaconStats(uint8_t *out, size_t &at) const
+{
+    // A 9603 build has no panel switch: beacon not in use, never on.
+    for (int i = 0; i < 4; ++i)
+        out[at++] = 0;
+    for (int i = 0; i < 4; ++i)
+        out[at++] = 0xFF;
+    for (int i = 0; i < 4; ++i)
+        out[at++] = 0;
+}
 #endif
 
 int IridiumPipe::prepareDeepSleep(void *unused)
@@ -1041,6 +1104,9 @@ uint8_t IridiumPipe::statusFlags() const
         flags |= 0x20;
     if (meshsat::screenForcedOff())
         flags |= 0x40;
+    // Bit 7 (MESHSAT-1772): the satellite beacon is on.
+    if (beaconOn())
+        flags |= 0x80;
     if (stat.modemAnswered)
         flags |= 0x04;
     if (incoming && xStreamBufferBytesAvailable(incoming) > INCOMING_BYTES * 3 / 4)
@@ -1064,7 +1130,7 @@ static void put32(uint8_t *out, size_t &at, uint32_t value)
         out[at++] = static_cast<uint8_t>((value >> (8 * i)) & 0xFF);
 }
 
-// STATS, contract v2: 52 bytes, little-endian, the layout in MESHSAT-1378.
+// STATS, contract v2: 64 bytes, little-endian, the layout in MESHSAT-1378 plus the beacon of MESHSAT-1772.
 void IridiumPipe::publishStats()
 {
     if (!statsCharacteristic || !Throttle::hasElapsed(lastStatsMs, STATS_NOTIFY_INTERVAL_MS))
@@ -1112,6 +1178,8 @@ void IridiumPipe::publishStats()
     // Why the previous run ended, and the battery at that stop in units of 100 mV (0 = not recorded).
     out[at++] = static_cast<uint8_t>(meshsat::lastDownCause());
     out[at++] = meshsat::lastDownBatteryDecivolts();
+    // 52 to 63: the satellite beacon (MESHSAT-1772). Static while nothing changes, so it adds no notifications.
+    putBeaconStats(out, at);
 
     // Ages move every second; compare everything but them so idle nodes stay quiet.
     uint8_t compareNew[STATS_BYTES];

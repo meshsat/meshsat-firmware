@@ -109,7 +109,9 @@ class IridiumPipe : private concurrency::OSThread
     static constexpr uint8_t CONTROL_LED = 0x01;
     static constexpr uint8_t CONTROL_SCREEN = 0x02;
     static constexpr uint8_t STATS_VERSION = 2;
-    static constexpr size_t STATS_BYTES = 52;
+    // 52 bytes since contract v2; 64 since 2 Nov 2026 (the satellite beacon, MESHSAT-1772, appended: clients read
+    // what they know and ignore the rest).
+    static constexpr size_t STATS_BYTES = 64;
     static constexpr size_t MAX_PASS_WINDOWS = 8;
 
     struct PassWindow {
@@ -151,6 +153,8 @@ class IridiumPipe : private concurrency::OSThread
     bool beaconOn() const;
     bool beaconDraining() const;
     uint32_t beaconNextInMs() const;
+    // STATS bytes 52 to 63 (MESHSAT-1772).
+    void putBeaconStats(uint8_t *out, size_t &at) const;
     bool sessionInFlight() const { return sessionInFlightFlag.load(); }
     const IridiumStats &stats() const { return stat; }
 
@@ -272,6 +276,10 @@ class IridiumPipe : private concurrency::OSThread
     // The IMT module's beacon hand-over count when the satellite was armed: a higher count at the switch-off means a
     // beacon message of this arming reached the modem.
     uint32_t beaconHandedAtArm = 0;
+    // For STATS (MESHSAT-1772): why the beacon last went off (0 not since boot, 1 switch, 2 idle, 3 limit, 4 cell low,
+    // 5 off before any message reached the modem) and the uptime second it last went on (0xFFFFFFFF never).
+    uint8_t beaconLastOffCode = 0;
+    uint32_t beaconOnUptimeS = 0xFFFFFFFFu;
     // The last position the node has seen, kept through a lost GPS lock (Meshtastic zeroes its own on that).
     bool fixHave = false;
     bool fixManual = false;
