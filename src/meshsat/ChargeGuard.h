@@ -15,6 +15,12 @@
 // Readings: the charger chip (AXP2101 die, taken while it does not charge, so its own charging heat does not count)
 // and, while the modem runs, the RockBLOCK 9704's board temperature. Not validated against the cell on a bench
 // (owner's decision of 2 Nov 2026); the margins stand in for that.
+//
+// The charger chip also feeds the ESP32-S3 and the radios, so even at rest it sits above the room: 35,7 to 37,3 C
+// at 21 C on unit 0001 (2 Nov 2026). Its reading minus CHARGER_RISE_C stands for the room. Right after a cold
+// power-on that rise has not built up yet, so for the first minutes (warm-up) nothing charges and only a cold raw
+// reading counts. The 9704's own rise is not known: its raw reading counts for the cold limit, and for heat only above
+// modemHotC.
 
 #include <cstdint>
 
@@ -24,6 +30,8 @@ enum class ChargeVerdict : uint8_t {
     Allowed = 0,
     // No fresh reading from the charger chip.
     NoReading,
+    // The first minutes after the guard started: the charger chip's own rise is still building.
+    WarmingUp,
     TooCold,
     TooHot,
     // Inside the window, waiting for the cell to follow after a cold reading.
@@ -39,6 +47,12 @@ struct ChargeGuardLimits {
     uint32_t hotHoldMs = 30 * 60 * 1000UL;
     // A reading older than this no longer counts.
     uint32_t staleMs = 15 * 60 * 1000UL;
+    // How far the charger chip sits above the room at rest (unit 0001: about 15,5 C at 21 C, 2 Nov 2026).
+    float chargerRiseC = 15.0f;
+    // After the guard's first reading: no charging, cold raw readings only, while that rise builds.
+    uint32_t warmUpMs = 10 * 60 * 1000UL;
+    // The 9704 board's raw reading stops charging for heat only above this.
+    float modemHotC = 50.0f;
 };
 
 class ChargeGuard
@@ -47,25 +61,35 @@ class ChargeGuard
     explicit ChargeGuard(ChargeGuardLimits limits = ChargeGuardLimits()) : l(limits) {}
 
     // The charger chip's reading (required) and the modem's board reading (when the modem runs).
-    void noteCharger(uint32_t now, float c) { note(charger, now, c); }
+    void noteCharger(uint32_t now, float c)
+    {
+        note(charger, now, c);
+        if (charger.valid && !chargerEverValid) {
+            chargerEverValid = true;
+            firstChargerMs = now;
+        }
+    }
     void noteModem(uint32_t now, float c) { note(modem, now, c); }
 
     ChargeVerdict evaluate(uint32_t now)
     {
         if (!fresh(charger, now))
             return ChargeVerdict::NoReading;
-        float lowest = charger.c;
-        float highest = charger.c;
-        if (fresh(modem, now)) {
-            lowest = modem.c < lowest ? modem.c : lowest;
-            highest = modem.c > highest ? modem.c : highest;
-        }
+        const bool modemOk = fresh(modem, now);
+        const bool warming = now - firstChargerMs < l.warmUpMs;
+        // Cold: the charger chip raw while it warms up, its estimate of the room after; the modem raw.
+        const float chargerRoom = warming ? charger.c : charger.c - l.chargerRiseC;
+        float lowest = chargerRoom;
+        if (modemOk && modem.c < lowest)
+            lowest = modem.c;
         if (lowest < l.lowC) {
             coldSeen = true;
             lastColdMs = now;
             return ChargeVerdict::TooCold;
         }
-        if (highest > l.highC) {
+        if (warming)
+            return ChargeVerdict::WarmingUp;
+        if (chargerRoom > l.highC || (modemOk && modem.c > l.modemHotC)) {
             hotSeen = true;
             lastHotMs = now;
             return ChargeVerdict::TooHot;
@@ -77,6 +101,8 @@ class ChargeGuard
         return ChargeVerdict::Allowed;
     }
 
+    // The charger chip's estimate of the room once warmed up (its raw reading minus its rise).
+    float chargerRoomC(uint32_t now) const { return now - firstChargerMs < l.warmUpMs ? charger.c : charger.c - l.chargerRiseC; }
     // For the log and the screen: the readings that count now (NaN-free: valid flags).
     bool chargerFresh(uint32_t now) const { return fresh(charger, now); }
     bool modemFresh(uint32_t now) const { return fresh(modem, now); }
@@ -116,6 +142,8 @@ class ChargeGuard
     ChargeGuardLimits l;
     Reading charger;
     Reading modem;
+    bool chargerEverValid = false;
+    uint32_t firstChargerMs = 0;
     bool coldSeen = false;
     bool hotSeen = false;
     uint32_t lastColdMs = 0;
@@ -129,6 +157,8 @@ inline const char *chargeVerdictText(ChargeVerdict v)
         return "Charging allowed";
     case ChargeVerdict::NoReading:
         return "Charging paused: no temperature";
+    case ChargeVerdict::WarmingUp:
+        return "Charging waits: warming up";
     case ChargeVerdict::TooCold:
         return "Charging paused: too cold";
     case ChargeVerdict::TooHot:

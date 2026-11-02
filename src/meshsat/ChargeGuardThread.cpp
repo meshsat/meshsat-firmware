@@ -80,19 +80,22 @@ void ChargeGuardThread::report(ChargeVerdict v, uint32_t now)
         snprintf(modem, sizeof(modem), "modem %.0f C", guard.modemC());
     const uint32_t holdMin = (guard.holdLeftMs(now, v) + 59999) / 60000;
     if (holdMin > 0)
-        LOG_INFO("MeshSat charge guard: %s, %u min left (charger %.1f C, %s)", chargeVerdictText(v), (unsigned)holdMin,
-                 guard.chargerC(), modem);
+        LOG_INFO("MeshSat charge guard: %s, %u min left (charger chip %.1f C, room estimate %.1f C, %s)", chargeVerdictText(v),
+                 (unsigned)holdMin, guard.chargerC(), guard.chargerRoomC(now), modem);
     else
-        LOG_INFO("MeshSat charge guard: %s (charger %.1f C, %s)", chargeVerdictText(v), guard.chargerC(), modem);
+        LOG_INFO("MeshSat charge guard: %s (charger chip %.1f C, room estimate %.1f C, %s)", chargeVerdictText(v),
+                 guard.chargerC(), guard.chargerRoomC(now), modem);
 #if HAS_SCREEN
     // A banner only where someone plugged in can act on it, and never for the start-up wait for a first reading.
     const bool plugged = pmu->isVbusIn();
-    const bool wasPausedForTemperature =
-        reported && lastVerdict != ChargeVerdict::Allowed && lastVerdict != ChargeVerdict::NoReading;
+    const bool quiet = [](ChargeVerdict x) {
+        return x == ChargeVerdict::Allowed || x == ChargeVerdict::NoReading || x == ChargeVerdict::WarmingUp;
+    }(lastVerdict);
+    const bool wasPausedForTemperature = reported && !quiet;
     if (screen && plugged) {
         if (v == ChargeVerdict::Allowed && wasPausedForTemperature)
             screen->showSimpleBanner("Charging resumed", BANNER_MS);
-        else if (v != ChargeVerdict::Allowed && v != ChargeVerdict::NoReading)
+        else if (v != ChargeVerdict::Allowed && v != ChargeVerdict::NoReading && v != ChargeVerdict::WarmingUp)
             screen->showSimpleBanner(chargeVerdictText(v), BANNER_MS);
     }
 #endif
@@ -112,8 +115,8 @@ int32_t ChargeGuardThread::runOnce()
         // Off until a reading allows it: the charger has charged on its own since power-up (P5 measures that gap).
         chargingOn = true;
         setCharging(false, now);
-        LOG_INFO("MeshSat charge guard: charging only while every reading is inside 10 to 35 C (charger chip, 9704 "
-                 "board while the modem runs); 60 min after a cold reading, 30 min after a hot one");
+        LOG_INFO("MeshSat charge guard: charging only inside 10 to 35 C (charger chip minus its 15 C rise after a "
+                 "10 min warm-up; 9704 board raw for cold, over 50 C for heat); 60 min after cold, 30 min after hot");
         return 1000;
     }
 
