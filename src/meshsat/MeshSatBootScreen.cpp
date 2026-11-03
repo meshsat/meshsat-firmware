@@ -315,11 +315,15 @@ void drawHomeScreen(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, 
     if (!line2[0] && !bar) {
         if (latest) {
             char age[8];
-            formatAge(age, sizeof(age), latestSince * 1000UL);
-            const char *name = latest->user.long_name[0] ? latest->user.long_name : latest->user.short_name;
+            formatAge(age, sizeof(age), latestSince > 4000000UL ? 4000000000UL : latestSince * 1000UL);
+            char idName[12];
+            snprintf(idName, sizeof(idName), "!%08x", (unsigned)latest->num);
+            const bool named = nodeInfoLiteHasUser(latest);
+            const char *shortName = (named && latest->short_name[0]) ? latest->short_name : idName;
+            const char *name = (named && latest->long_name[0]) ? latest->long_name : shortName;
             snprintf(line2, sizeof(line2), "%s heard %s ago", name, age);
-            if (display->getStringWidth(line2) > display->getWidth() && latest->user.short_name[0])
-                snprintf(line2, sizeof(line2), "%s heard %s ago", latest->user.short_name, age);
+            if (display->getStringWidth(line2) > display->getWidth())
+                snprintf(line2, sizeof(line2), "%s heard %s ago", shortName, age);
         } else {
             snprintf(line2, sizeof(line2), "No other node heard yet");
         }
