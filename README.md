@@ -96,6 +96,10 @@ Every `meshsat-node-<version>` tag publishes a [release](https://github.com/mesh
 - **[MeshSat](https://github.com/meshsat/meshsat)**, the Bridge: a Raspberry Pi gateway that bonds Meshtastic, Iridium, cellular SMS, APRS, ZigBee and TCP
 - **[MeshSat Hub](https://hub.meshsat.net)**, multi-tenant fleet management
 
+## Mission and use policy
+
+MeshSat does not work with any organisation that develops, produces, integrates or operates weapon systems, and provides nothing for use in one. The licence below is unchanged: the policy covers whom we work with, not what you may do with the code. Read the [MeshSat Mission and Use Policy](https://meshsat.net/policy/).
+
 ## License
 
 [GNU General Public License v3.0](LICENSE), the same as upstream. The Meshtastic firmware is copyright its contributors; the MeshSat additions are copyright 2026 Elli and Kyriakos. Meshtastic® is a registered trademark of Meshtastic LLC.
