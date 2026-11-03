@@ -29,6 +29,14 @@ class ChargeGuardThread : public concurrency::OSThread
   public:
     ChargeGuardThread() : concurrency::OSThread("ChargeGuard") {}
     void noteModem(float c) { guard.noteModem(millis(), c); }
+    bool state(ChargeVerdict &v, float &roomC) const
+    {
+        if (!reported)
+            return false;
+        v = lastVerdict;
+        roomC = guard.chargerRoomC(millis());
+        return true;
+    }
 
   protected:
     int32_t runOnce() override;
@@ -151,6 +159,11 @@ void startChargeGuard()
 {
     if (!guardThread)
         guardThread = new ChargeGuardThread();
+}
+
+bool chargeGuardState(ChargeVerdict &verdict, float &roomC)
+{
+    return guardThread && guardThread->state(verdict, roomC);
 }
 
 void chargeGuardNoteModemC(float c)

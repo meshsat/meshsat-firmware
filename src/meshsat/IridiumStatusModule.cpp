@@ -43,7 +43,12 @@ static constexpr uint32_t BEACON_BLIP_EVERY_MS = 3 * 1000UL;
 static const IridiumStatusModule::BlinkStep BEACON_BLIP_SCRIPT[] = {{80, 0}};
 #endif
 
-IridiumStatusModule::IridiumStatusModule() : MeshModule("IridiumStatus"), concurrency::OSThread("IridiumStatus") {}
+IridiumStatusModule *IridiumStatusModule::self = nullptr;
+
+IridiumStatusModule::IridiumStatusModule() : MeshModule("IridiumStatus"), concurrency::OSThread("IridiumStatus")
+{
+    self = this;
+}
 
 const char *IridiumStatusModule::moStatusWord(int status)
 {

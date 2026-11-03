@@ -945,8 +945,13 @@ void Screen::setup()
         else
 #endif
         {
+#if MESHSAT_IRIDIUM
+            // The Meshtastic community badge M-PWRD in place of the Meshtastic logo (owner, 3 Nov 2026, MESHSAT-1776).
+            meshsat::drawPoweredScreen(display, state, x, y);
+#else
             const char *region = myRegion ? myRegion->name : nullptr;
             graphics::UIRenderer::drawBootIconScreen(region, display, state, x, y);
+#endif
         }
     };
     ui->setFrames(alertFrames, 1);
@@ -1276,6 +1281,13 @@ int32_t Screen::runOnce()
             desiredFramerate = COMPASS_ACTIVE_FRAMERATE;
         }
     }
+#endif
+
+#if MESHSAT_IRIDIUM
+    // The home frame's BCN lamp blinks with the beacon's LED (MESHSAT-1776): faster frames only while the beacon is on.
+    if (showingNormalScreen && framesetInfo.positions.home != 255 &&
+        ui->getUiState()->currentFrame == framesetInfo.positions.home && meshsat::homeWantsFastFrames())
+        desiredFramerate = meshsat::HOME_BLINK_FPS;
 #endif
 
     if (targetFramerate != desiredFramerate && ui->getUiState()->frameState == FIXED) {

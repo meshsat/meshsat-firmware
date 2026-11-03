@@ -46,11 +46,18 @@ class IridiumStatusModule : public MeshModule, private concurrency::OSThread
     // Words for an SBDIX MO status, for the frame, the banners and the log.
     static const char *moStatusWord(int status);
 
+    // The one instance (created in Modules.cpp), for the screen.
+    static IridiumStatusModule *instance() { return self; }
+    // When the beacon's last LED blip started, 0 while the beacon is off: the screen's BCN lamp blinks from the same
+    // moment, so lamp and LED blink together (owner, 3 Nov 2026, MESHSAT-1776).
+    uint32_t beaconBlipStartMs() const { return lastHeartbeatMs; }
+
   protected:
     bool wantPacket(const meshtastic_MeshPacket *p) override { return false; }
     int32_t runOnce() override;
 
   private:
+    static IridiumStatusModule *self;
     enum class Led : uint8_t { Off, On, Blink1Hz, Blink4Hz };
 
     static void formatAge(char *out, size_t size, uint32_t sinceMs);

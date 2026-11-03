@@ -18,6 +18,14 @@
 #endif
 #include "meshsat/IridiumStatusModule.h"
 #include "meshsat/MeshSatBranding.h"
+#include "meshsat/SatBeacon.h"
+#if defined(MESHSAT_CHARGE_GUARD) && defined(HAS_PMU)
+#include "meshsat/ChargeGuardThread.h"
+#endif
+
+#include "BluetoothStatus.h"
+#include "GPSStatus.h"
+#include "PowerStatus.h"
 
 #include <cmath>
 #include <cstdio>
@@ -27,6 +35,7 @@ namespace meshsat
 {
 
 static const uint8_t markBits[] PROGMEM = MESHSAT_MARK_DATA;
+static const uint8_t mpwrdBits[] PROGMEM = MESHSAT_MPWRD_DATA;
 
 // One orbit of the satellite dot every 4 s.
 static constexpr uint32_t ORBIT_PERIOD_MS = 4000;
@@ -65,22 +74,38 @@ static void drawMarkWithOrbit(OLEDDisplay *display, int16_t markX, int16_t markY
     display->fillCircle(dotX, dotY, ORBIT_DOT_RADIUS);
 }
 
+void drawPoweredScreen(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
+{
+    (void)state;
+    display->setColor(WHITE);
+    display->drawXbm(x + (display->getWidth() - MESHSAT_MPWRD_WIDTH) / 2, y + (display->getHeight() - MESHSAT_MPWRD_HEIGHT) / 2,
+                     MESHSAT_MPWRD_WIDTH, MESHSAT_MPWRD_HEIGHT, mpwrdBits);
+}
+
 void drawBootScreen(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
 {
     (void)state;
     const uint32_t now = millis();
     display->setTextAlignment(TEXT_ALIGN_LEFT);
 
-    const int16_t markX = x + 2;
+    const int16_t markX = x;
     const int16_t markY = y + 4;
     drawMarkWithOrbit(display, markX, markY, now);
 
+    // "Mesh" in dots like the orbit, "Sat" solid (owner's pick of 3 Nov 2026, MESHSAT-1776): Mesh is drawn bold, then
+    // every other pixel of its box is cleared, so it reads as the second, softer tone.
     display->setFont(FONT_MEDIUM);
     const int16_t wordX = markX + MESHSAT_MARK_WIDTH + 3;
     const int16_t wordY = markY + (MESHSAT_MARK_HEIGHT - FONT_HEIGHT_MEDIUM) / 2;
     drawWeighted(display, wordX, wordY, "Mesh", 2);
-    const int16_t satX = wordX + display->getStringWidth("Mesh") + 2;
-    drawWeighted(display, satX, wordY, "Sat", 3);
+    const int16_t meshW = display->getStringWidth("Mesh") + 1;
+    display->setColor(BLACK);
+    for (int16_t px = wordX; px <= wordX + meshW; ++px)
+        for (int16_t py = wordY; py < wordY + FONT_HEIGHT_MEDIUM; ++py)
+            if (((px + py) & 1) != 0)
+                display->setPixel(px, py);
+    display->setColor(WHITE);
+    drawWeighted(display, wordX + display->getStringWidth("Mesh") + 3, wordY, "Sat", 2);
 
     display->setFont(FONT_SMALL);
     const int16_t lineY = y + display->getHeight() - FONT_HEIGHT_SMALL;
@@ -94,120 +119,234 @@ void drawBootScreen(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, 
         screen->forceDisplay();
 }
 
-// ---- home screen ----
+// ---- home screen: the annunciator (owner, 3 Nov 2026, MESHSAT-1776) ----
 
-static void drawSignalBars(OLEDDisplay *display, int16_t x, int16_t baseY, int bars)
+enum class Lamp : uint8_t { Off, On, Alert };
+
+// How long the BCN lamp stays lit from the start of each LED blip: the LED's 80 ms is too short to see on the panel.
+static constexpr uint32_t BCN_LIT_MS = 500;
+static constexpr int16_t LAMP_H = 15;
+
+// One lamp: lit (filled, dark words), off (outlined), or alert (striped, words on a dark field).
+static void drawLamp(OLEDDisplay *display, int16_t x, int16_t y, int16_t w, const char *label, const char *value, Lamp lamp)
 {
-    for (int i = 0; i < 5; ++i) {
-        const int h = 3 + i * 2;
-        const int bx = x + i * 4;
-        if (i < bars)
-            display->fillRect(bx, baseY - h, 3, h);
+    display->setFont(FONT_SMALL);
+    display->setTextAlignment(TEXT_ALIGN_LEFT);
+    display->setColor(WHITE);
+    if (lamp == Lamp::Alert) {
+        for (int16_t px = x + 1; px < x + w - 1; ++px)
+            for (int16_t py = y + 1; py < y + LAMP_H - 1; ++py)
+                if ((px + py) % 3 == 0)
+                    display->setPixel(px, py);
+        char words[16];
+        if (value && value[0])
+            snprintf(words, sizeof(words), "%s %s", label, value);
         else
-            display->drawRect(bx, baseY - h, 3, h);
+            snprintf(words, sizeof(words), "%s", label);
+        display->setColor(BLACK);
+        display->fillRect(x + 1, y + 1, display->getStringWidth(words) + 4, LAMP_H - 2);
+        display->setColor(WHITE);
+        display->drawRect(x, y, w, LAMP_H);
+        display->drawString(x + 3, y + 1, words);
+        return;
     }
+    if (lamp == Lamp::On) {
+        display->fillRect(x, y, w, LAMP_H);
+        display->setColor(BLACK);
+    } else {
+        display->drawRect(x, y, w, LAMP_H);
+    }
+    display->drawString(x + 3, y + 1, label);
+    if (value && value[0]) {
+        display->setTextAlignment(TEXT_ALIGN_RIGHT);
+        display->drawString(x + w - 3, y + 1, value);
+        display->setTextAlignment(TEXT_ALIGN_LEFT);
+    }
+    display->setColor(WHITE);
+}
+
+bool homeWantsFastFrames()
+{
+    IridiumPipe *pipe = IridiumPipe::instance();
+    return pipe && pipe->beaconOn();
 }
 
 void drawHomeScreen(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
 {
     (void)state;
-    display->clear();
-    display->setTextAlignment(TEXT_ALIGN_LEFT);
-    display->setFont(FONT_SMALL);
-    graphics::drawCommonHeader(display, x, y, "");
-    y += BASEUI_BELOW_HEADER_MARGIN;
-
-    const int *rows = graphics::getTextPositions(display);
-    const int16_t left = x + BASEUI_BODY_LR_MARGIN;
-    const int16_t right = x + display->getWidth() - BASEUI_BODY_LR_MARGIN;
-    const int16_t line1 = rows[1] + y;
     const uint32_t now = millis();
-    char text[32];
-    char age[8];
-
-    // Line 1: the node's short name in bold on the left, then the satellite queue (9704 build: texts waiting on
-    // the node plus messages in the modem, owner's ask of 24 Oct 2026) or the region (9603 build); bars and
-    // the modem's holder on the right.
-    const char *shortName = owner.short_name[0] ? owner.short_name : "node";
-    drawWeighted(display, left, line1, shortName, 2);
+    char value[12];
+    char line1[40];
+    char line2[48];
+    line2[0] = 0;
+    display->setFont(FONT_SMALL);
+    display->setTextAlignment(TEXT_ALIGN_LEFT);
+    display->setColor(WHITE);
     IridiumPipe *pipe = IridiumPipe::instance();
-#if MESHSAT_IRIDIUM_JSPR
-    {
-        unsigned queued = pipe ? pipe->stats().moInModem : 0;
-        if (iridiumImtModule)
-            queued += static_cast<unsigned>(iridiumImtModule->waitingCount());
-        snprintf(text, sizeof(text), "  %u queued", queued);
-    }
-#else
-    snprintf(text, sizeof(text), "  %s", myRegion && myRegion->name ? myRegion->name : "");
-#endif
-    display->drawString(left + display->getStringWidth(shortName) + 1, line1, text);
 
-    if (!pipe) {
-        display->drawString(left, rows[2] + y, "no Iridium pipe");
-        return;
-    }
-    const IridiumStats &st = pipe->stats();
-
-    // Who holds the modem, in the words of what it does: "app" while a phone drives it, "mesh" while the node
-    // routes its satellite channel on its own, "free" in between.
-    const char *ownerWord = "free";
-    if (pipe->owner() == IridiumModemOwner::Phone)
-        ownerWord = "app";
-    else if (pipe->owner() == IridiumModemOwner::Node)
-        ownerWord = "mesh";
-    const int16_t ownerW = display->getStringWidth(ownerWord);
-    display->drawString(right - ownerW, line1, ownerWord);
-    const bool csqFresh = st.lastCsq >= 0 && !Throttle::hasElapsed(st.lastCsqMs, 30 * 60 * 1000UL);
-    drawSignalBars(display, right - ownerW - 24, line1 + FONT_HEIGHT_SMALL - 2, csqFresh ? (st.lastCsq > 5 ? 5 : st.lastCsq) : 0);
-
-    // Line 2, the one big thing: the satellite state in a few words.
-    const IridiumModemPower power = pipe->modemPower();
-    // With the panel button in use (MESHSAT-1667) the switch is the one big thing: the satellite beacon, on or off
-    // (owner's words, 2 Nov 2026); the satellite row below says what the modem is doing.
-    const bool buttonInUse = pipe->panelButtonActive();
-    if (buttonInUse) {
-        snprintf(text, sizeof(text), "%s", pipe->satelliteArmed() ? "SAT BEACON ON" : "SAT BEACON OFF");
-    } else if (power == IridiumModemPower::Inhibited) {
-        snprintf(text, sizeof(text), "Modem off: cell low");
-    } else if (power == IridiumModemPower::Starting) {
-        snprintf(text, sizeof(text), "Modem starting");
-    } else if (power == IridiumModemPower::Fault) {
-        snprintf(text, sizeof(text), "Modem fault");
-    } else if (!st.modemAnswered) {
-        snprintf(text, sizeof(text), "Modem silent");
-    } else if (st.sessionInFlight) {
-        snprintf(text, sizeof(text), "Session...");
-    } else if (st.ringPending) {
-        snprintf(text, sizeof(text), "Msg waiting");
-    } else if (st.lastSessionMs == 0) {
-        // Ready for what: a phone's traffic (App mode) or the node's own routing of the satellite channel (Mesh mode).
-        // Nobody holding the modem is a change of hands under way (the minute after a phone lets go before the
-        // node takes it, or a phone about to claim it), not a third mode (owner, 24 Oct 2026).
-        if (pipe->owner() == IridiumModemOwner::Phone)
-            snprintf(text, sizeof(text), "App mode");
-        else if (pipe->owner() == IridiumModemOwner::Node)
-            snprintf(text, sizeof(text), "Mesh mode");
-        else
-            snprintf(text, sizeof(text), "Changing mode");
-    } else {
-        formatAge(age, sizeof(age), now - st.lastSessionMs);
-        if (st.lastMoStatus >= 0 && st.lastMoStatus <= 4) {
-            snprintf(text, sizeof(text), "Sent %s ago", age);
-        } else {
-            // Capitalised status word, e.g. "No network".
-            const char *word = IridiumStatusModule::moStatusWord(st.lastMoStatus);
-            snprintf(text, sizeof(text), "%s", word);
-            if (text[0] >= 'a' && text[0] <= 'z')
-                text[0] = static_cast<char>(text[0] - 'a' + 'A');
+    // SAT: lit while the modem runs and answers, with its bars; striped on a modem fault; off otherwise (switch out).
+    Lamp sat = Lamp::Off;
+    value[0] = 0;
+    if (pipe) {
+        const IridiumStats &st = pipe->stats();
+        const IridiumModemPower power = pipe->modemPower();
+        if (power == IridiumModemPower::Fault) {
+            sat = Lamp::Alert;
+        } else if (power == IridiumModemPower::Running && st.modemAnswered) {
+            sat = Lamp::On;
+            if (st.lastCsq >= 0 && !Throttle::hasElapsed(st.lastCsqMs, 30 * 60 * 1000UL))
+                snprintf(value, sizeof(value), "%d", st.lastCsq > 5 ? 5 : st.lastCsq);
         }
     }
-    display->setFont(FONT_MEDIUM);
-    const int16_t bigY = line1 + FONT_HEIGHT_SMALL + 4;
-    if (display->getStringWidth(text) > display->getWidth() - 2 * BASEUI_BODY_LR_MARGIN)
-        display->setFont(FONT_SMALL);
-    display->drawString(left, bigY, text);
-    display->setFont(FONT_SMALL);
+    drawLamp(display, x, y, 39, "SAT", value, sat);
+
+    // MESH: lit while other nodes were heard in the last two hours, with how many. The most recent one goes on line 2.
+    size_t others = 0;
+    const meshtastic_NodeInfoLite *latest = nullptr;
+    uint32_t latestSince = UINT32_MAX;
+    for (size_t i = 0; i < nodeDB->getNumMeshNodes(); ++i) {
+        const meshtastic_NodeInfoLite *n = nodeDB->getMeshNodeByIndex(i);
+        if (!n || n->num == nodeDB->getNodeNum() || n->last_heard == 0)
+            continue;
+        const uint32_t since = sinceLastSeen(n);
+        if (since < 2 * 60 * 60) {
+            ++others;
+            if (since < latestSince) {
+                latestSince = since;
+                latest = n;
+            }
+        }
+    }
+    snprintf(value, sizeof(value), "%u", (unsigned)others);
+    drawLamp(display, x + 40, y, 48, "MESH", value, others > 0 ? Lamp::On : Lamp::Off);
+
+    // GPS: lit with a fix, with the satellites in view.
+    const bool fix = gpsStatus && gpsStatus->getHasLock();
+    value[0] = 0;
+    if (fix)
+        snprintf(value, sizeof(value), "%u", (unsigned)gpsStatus->getNumSatellites());
+    drawLamp(display, x + 89, y, 39, "GPS", value, fix ? Lamp::On : Lamp::Off);
+
+    // APP: lit while a phone is connected over Bluetooth.
+    const bool app =
+        bluetoothStatus && bluetoothStatus->getConnectionState() == meshtastic::BluetoothStatus::ConnectionState::CONNECTED;
+    drawLamp(display, x, y + 16, 39, "APP", "", app ? Lamp::On : Lamp::Off);
+
+    // BAT: lit with the charge; striped when low on the cell alone, or when the charge guard holds charging back.
+    Lamp bat = Lamp::Off;
+    value[0] = 0;
+    const bool usb = powerStatus && powerStatus->getHasUSB();
+    if (powerStatus && powerStatus->getHasBattery()) {
+        const unsigned pct = powerStatus->getBatteryChargePercent();
+        snprintf(value, sizeof(value), "%u", pct);
+        bat = (pct <= 15 && !usb) ? Lamp::Alert : Lamp::On;
+    }
+    bool chargeHeld = false;
+    bool chargeCold = false;
+    float roomC = 0.0f;
+#if defined(MESHSAT_CHARGE_GUARD) && defined(HAS_PMU)
+    ChargeVerdict verdict = ChargeVerdict::NoReading;
+    if (usb && chargeGuardState(verdict, roomC)) {
+        chargeCold = verdict == ChargeVerdict::TooCold || verdict == ChargeVerdict::ColdHold;
+        chargeHeld = chargeCold || verdict == ChargeVerdict::TooHot || verdict == ChargeVerdict::HotHold;
+        if (chargeHeld)
+            bat = Lamp::Alert;
+    }
+#endif
+    drawLamp(display, x + 40, y + 16, 48, "BAT", value, bat);
+
+    // BCN: blinks with the LED while the beacon is on, lit for BCN_LIT_MS from the start of each blip.
+    Lamp bcn = Lamp::Off;
+    const bool beaconOn = pipe && pipe->beaconOn();
+    if (beaconOn) {
+        IridiumStatusModule *status = IridiumStatusModule::instance();
+        const uint32_t blip = status ? status->beaconBlipStartMs() : 0;
+        if (blip != 0 && now - blip < BCN_LIT_MS)
+            bcn = Lamp::On;
+    }
+    drawLamp(display, x + 89, y + 16, 39, "BCN", "", bcn);
+
+    // Two lines: what matters now, in priority order.
+    bool bar = false;
+    uint32_t nextMs = 0;
+    unsigned waiting = 0;
+#if MESHSAT_IRIDIUM_JSPR
+    if (pipe)
+        waiting = pipe->stats().moInModem + (iridiumImtModule ? static_cast<unsigned>(iridiumImtModule->waitingCount()) : 0);
+#endif
+    value[0] = 0;
+    if (pipe && pipe->modemPower() == IridiumModemPower::Fault) {
+        snprintf(line1, sizeof(line1), "Satellite modem fault.");
+    } else if (pipe && pipe->beaconDraining()) {
+        snprintf(line1, sizeof(line1), "SAT BEACON OFF");
+        snprintf(line2, sizeof(line2), "sending its last message");
+    } else if (beaconOn) {
+        snprintf(line1, sizeof(line1), "SAT BEACON ON");
+        nextMs = pipe->beaconNextInMs();
+        if (nextMs == 0) {
+            snprintf(value, sizeof(value), "sending");
+        } else {
+            const uint32_t secs = (nextMs + 999) / 1000;
+            snprintf(value, sizeof(value), "%u:%02u", (unsigned)(secs / 60), (unsigned)(secs % 60));
+        }
+        bar = true;
+    } else if (chargeHeld) {
+        snprintf(line1, sizeof(line1), "Not charging: too %s.", chargeCold ? "cold" : "hot");
+        if (chargeCold)
+            snprintf(line2, sizeof(line2),
+                     "%d \xC2\xB0"
+                     "C here, starts at 10 \xC2\xB0"
+                     "C",
+                     (int)lroundf(roomC));
+        else
+            snprintf(line2, sizeof(line2),
+                     "%d \xC2\xB0"
+                     "C here, starts under 35 \xC2\xB0"
+                     "C",
+                     (int)lroundf(roomC));
+    } else if (bat == Lamp::Alert) {
+        snprintf(line1, sizeof(line1), "Battery low.");
+        snprintf(line2, sizeof(line2), "Plug in USB-C.");
+    } else if (waiting > 0) {
+        snprintf(line1, sizeof(line1), "%u waiting for the satellite", waiting);
+    } else {
+        snprintf(line1, sizeof(line1), "All quiet.");
+    }
+    if (!line2[0] && !bar) {
+        if (latest) {
+            char age[8];
+            formatAge(age, sizeof(age), latestSince * 1000UL);
+            const char *name = latest->user.long_name[0] ? latest->user.long_name : latest->user.short_name;
+            snprintf(line2, sizeof(line2), "%s heard %s ago", name, age);
+            if (display->getStringWidth(line2) > display->getWidth() && latest->user.short_name[0])
+                snprintf(line2, sizeof(line2), "%s heard %s ago", latest->user.short_name, age);
+        } else {
+            snprintf(line2, sizeof(line2), "No other node heard yet");
+        }
+    }
+
+    const int16_t row1 = y + 35;
+    const int16_t row2 = y + 48;
+    display->setColor(WHITE);
+    display->setTextAlignment(TEXT_ALIGN_LEFT);
+    display->drawString(x, row1, line1);
+    if (value[0]) {
+        display->setTextAlignment(TEXT_ALIGN_RIGHT);
+        display->drawString(x + display->getWidth() - 1, row1, value);
+        display->setTextAlignment(TEXT_ALIGN_LEFT);
+    }
+    if (bar) {
+        // The bar fills towards the next position.
+        const uint32_t interval = BeaconTimes{}.intervalMs;
+        const uint32_t left = nextMs > interval ? interval : nextMs;
+        const int16_t inner = display->getWidth() - 4;
+        display->drawRect(x, y + 52, display->getWidth(), 8);
+        const int16_t fill = (int16_t)((uint64_t)inner * (interval - left) / interval);
+        if (fill > 0)
+            display->fillRect(x + 2, y + 54, fill, 4);
+    } else if (line2[0]) {
+        display->drawString(x, row2, line2);
+    }
 }
 
 void drawHomeSatelliteRow(OLEDDisplay *display, int16_t x, int16_t y)
