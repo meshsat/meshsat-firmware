@@ -2,6 +2,10 @@
 
 // The panel button's arming logic (MESHSAT-1667), with no Arduino in it so a host test can drive it.
 //
+// "Armed" is the satellite beacon being on (MESHSAT-1772). Since 6 Nov 2026 it no longer decides whether the modem
+// has power: the modem never stays off for the switch (owner). The words below about arming the satellite and the
+// CE file's Shutdown pending describe the beacon's on and off now.
+//
 // One input, the button pin read as "pressed" (pulled up, the switch to ground), sampled often. The press edge
 // arms the satellite and, on a latching switch, the release edge disarms it; on a momentary switch a second press
 // disarms. The kind of switch is told by how long the pin stays down: held LATCHING_MS or more, it is a latching

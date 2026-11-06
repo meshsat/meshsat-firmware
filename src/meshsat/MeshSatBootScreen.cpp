@@ -184,7 +184,8 @@ void drawHomeScreen(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, 
     display->setColor(WHITE);
     IridiumPipe *pipe = IridiumPipe::instance();
 
-    // SAT: lit while the modem runs and answers, with its bars; striped on a modem fault; off otherwise (switch out).
+    // SAT: lit while the modem runs and answers, with its bars; striped on a modem fault; off otherwise (starting, or
+    // the cell too low for it).
     Lamp sat = Lamp::Off;
     value[0] = 0;
     if (pipe) {
@@ -370,16 +371,13 @@ void drawHomeSatelliteRow(OLEDDisplay *display, int16_t x, int16_t y)
         const uint32_t now = millis();
         const IridiumModemPower power = pipe->modemPower();
         const bool buttonInUse = pipe->panelButtonActive();
-        if (buttonInUse && !pipe->satelliteArmed()) {
-            if (pipe->beaconDraining())
-                snprintf(text, sizeof(text), "Sat: beacon off, sending");
-            else
-                snprintf(text, sizeof(text), "%s",
-                         power == IridiumModemPower::Inhibited ? "Sat: beacon off" : "Sat: beacon off, stopping");
+        // The switch is the beacon's only (owner, 6 Nov 2026): with it out the modem runs as on a unit without one.
+        if (buttonInUse && pipe->beaconDraining()) {
+            snprintf(text, sizeof(text), "Sat: beacon off, sending");
         } else if (power == IridiumModemPower::Inhibited) {
-            snprintf(text, sizeof(text), "%s", buttonInUse ? "Sat: beacon on, starting" : "Sat: modem off, cell low");
+            snprintf(text, sizeof(text), "Sat: modem off, cell low");
         } else if (power == IridiumModemPower::Starting) {
-            snprintf(text, sizeof(text), "%s", buttonInUse ? "Sat: beacon on, starting" : "Sat: modem starting");
+            snprintf(text, sizeof(text), "Sat: modem starting");
         } else if (power == IridiumModemPower::Fault) {
             snprintf(text, sizeof(text), "Sat: modem fault");
         } else if (!st.modemAnswered) {

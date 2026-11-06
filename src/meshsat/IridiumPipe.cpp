@@ -511,12 +511,11 @@ void IridiumPipe::restoreArming(uint32_t now)
     const bool pressed = digitalRead(MESHSAT_PANEL_BUTTON_PIN) == LOW;
     arming.restore(now, seen, switchKind, pressed);
     if (!seen)
-        LOG_INFO("MeshSat panel button: GPIO%d never pressed on this unit, the modem runs without arming",
-                 MESHSAT_PANEL_BUTTON_PIN);
+        LOG_INFO("MeshSat panel button: GPIO%d never pressed on this unit, no beacon until it is", MESHSAT_PANEL_BUTTON_PIN);
     else
-        LOG_INFO("MeshSat panel button: GPIO%d, %s switch, %s; disarmed after the reset%s", MESHSAT_PANEL_BUTTON_PIN,
+        LOG_INFO("MeshSat panel button: GPIO%d, %s switch, %s; beacon off after the reset%s", MESHSAT_PANEL_BUTTON_PIN,
                  switchKind == meshsat::SwitchKind::Latching ? "latching" : "momentary", pressed ? "pressed" : "released",
-                 pressed && switchKind == meshsat::SwitchKind::Latching ? ", release and press it to arm" : "");
+                 pressed && switchKind == meshsat::SwitchKind::Latching ? ", release and press it for the beacon" : "");
 }
 
 bool IridiumPipe::cellAllowsArming() const
@@ -535,18 +534,18 @@ void IridiumPipe::noteArmEvent(meshsat::ArmEvent ev, uint32_t now)
     stat.armEventMs = now == 0 ? 1 : now;
     switch (ev) {
     case meshsat::ArmEvent::Armed:
-        LOG_INFO("MeshSat panel button: satellite armed, beacon on: position now and every 10 min to \"@%s\"; off after 15 "
-                 "min without satellite traffic, 30 min at most",
+        LOG_INFO("MeshSat panel button: beacon on: position now and every 10 min to \"@%s\"; off after 15 min without "
+                 "satellite traffic, 30 min at most",
                  MESHSAT_BEACON_CONTACT);
         beaconHandedAtArm = iridiumImtModule ? iridiumImtModule->beaconHandedCount() : 0;
         beacon.onArmed(now);
         beaconOnUptimeS = now / 1000;
         break;
     case meshsat::ArmEvent::RefusedCellLow:
-        LOG_WARN("MeshSat panel button: not armed, the cell is under %d mV", MESHSAT_IRIDIUM_CELL_ON_MV);
+        LOG_WARN("MeshSat panel button: beacon not on, the cell is under %d mV", MESHSAT_IRIDIUM_CELL_ON_MV);
         break;
     case meshsat::ArmEvent::LatchingDetected:
-        LOG_INFO("MeshSat panel button: held down 10 s, a latching switch: in = armed, out = disarmed from now on");
+        LOG_INFO("MeshSat panel button: held down 10 s, a latching switch: in = beacon on, out = beacon off from now on");
         break;
     case meshsat::ArmEvent::DisarmedByButton:
     case meshsat::ArmEvent::DisarmedIdle:
@@ -566,7 +565,7 @@ void IridiumPipe::noteArmEvent(meshsat::ArmEvent ev, uint32_t now)
                 iridiumImtModule->dropBeaconTexts();
             LOG_INFO("MeshSat beacon: off before any message reached the modem, nothing sent");
         } else if (handed) {
-            LOG_INFO("MeshSat beacon: off (%s); the modem stays up for the last message, %u s at most",
+            LOG_INFO("MeshSat beacon: off (%s); the node keeps the modem for the last message, %u s at most",
                      meshsat::beaconOffReasonText(why), static_cast<unsigned>(meshsat::BeaconTimes().drainMs / 1000));
         }
         break;
@@ -611,11 +610,6 @@ bool IridiumPipe::beaconSettled() const
     return (!iridiumImtModule || iridiumImtModule->beaconWaitingCount() == 0) && stat.moInModem == 0;
 }
 
-bool IridiumPipe::beaconHoldsModem(uint32_t now) const
-{
-    return beacon.holdsModem(now, beaconSettled());
-}
-
 void IridiumPipe::runBeacon(uint32_t now)
 {
     sampleFix(now);
@@ -637,8 +631,7 @@ void IridiumPipe::runBeacon(uint32_t now)
     }
     const bool settled = beaconSettled();
     if (beacon.finishDrain(now, settled))
-        LOG_INFO("MeshSat beacon: %s; the modem is shut down",
-                 settled ? "the last message is out" : "the last message did not get out in time");
+        LOG_INFO("MeshSat beacon: %s", settled ? "the last message is out" : "the last message is not out yet and stays queued");
 }
 
 void IridiumPipe::runArming(uint32_t now)
@@ -815,8 +808,9 @@ void IridiumPipe::runModemPower(uint32_t now)
     sampleCell(now);
     const bool cellLow = cellLowSamples >= CELL_LOW_SAMPLES;
 #if defined(MESHSAT_PANEL_BUTTON_PIN) && defined(MESHSAT_IRIDIUM_ENABLE_PIN)
-    // A low cell disarms, so voltage recovery never arms again (CE technical file R13); then the button's state is
-    // a stop reason of its own. Before this unit's first press the button changes nothing.
+    // A low cell turns the beacon off, so voltage recovery never turns it on again. The panel switch itself never
+    // powers the modem down: it is the beacon's switch only, and the modem never stays off for it (owner, 6 Nov
+    // 2026; until then a switch pulled out cut the 9704's supply and no phone could send through the node).
     if (cellLow && arming.armed())
         noteArmEvent(arming.disarmForCell(), now);
     if (cellLow && beacon.isDraining()) {
@@ -826,14 +820,9 @@ void IridiumPipe::runModemPower(uint32_t now)
             iridiumImtModule->dropBeaconTexts();
         LOG_WARN("MeshSat beacon: the cell is too low for the modem; the last message is not sent");
     }
-    // The beacon's last message keeps a running modem up after the switch-off; it never starts a stopped one.
-    const bool disarmed =
-        arming.active() && !arming.armed() && !(modemPowerState != IridiumModemPower::Inhibited && beaconHoldsModem(now));
-#else
-    const bool disarmed = false;
 #endif
-    const bool stopWanted = cellLow || disarmed;
-    const char *stopWhy = cellLow ? "cell under the off-threshold" : "satellite disarmed";
+    const bool stopWanted = cellLow;
+    const char *stopWhy = "cell under the off-threshold";
     const bool clientOn = currentOwner.load() != IridiumModemOwner::None;
     switch (modemPowerState) {
     case IridiumModemPower::Inhibited:
@@ -857,7 +846,7 @@ void IridiumPipe::runModemPower(uint32_t now)
 #endif
         if (modemOffMs != 0 && !Throttle::hasElapsed(modemOffMs, MIN_OFF_MS))
             return;
-        if (!disarmed && cellOkSamples >= CELL_OK_SAMPLES)
+        if (cellOkSamples >= CELL_OK_SAMPLES)
             startModem(now, false);
         return;
     case IridiumModemPower::Starting:

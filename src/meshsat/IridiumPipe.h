@@ -144,11 +144,11 @@ class IridiumPipe : private concurrency::OSThread
 
     IridiumModemOwner owner() const { return currentOwner.load(); }
     IridiumModemPower modemPower() const;
-    // The panel button (MESHSAT-1667): active once this unit's button was ever pressed; then the modem runs only
-    // while armed. Without a button, or before its first press, the modem runs as it always did.
+    // The panel switch (MESHSAT-1667): active once this unit's switch was ever pressed. It is the beacon's switch
+    // only: "armed" means the beacon is on, and the modem runs whatever the switch says (owner, 6 Nov 2026).
     bool panelButtonActive() const;
     bool satelliteArmed() const;
-    // The satellite beacon (MESHSAT-1667): on while the satellite is armed; draining while its last message goes out
+    // The satellite beacon (MESHSAT-1772): on while the switch is in; draining while its last message goes out
     // after the switch-off; the time to its next position message while on.
     bool beaconOn() const;
     bool beaconDraining() const;
@@ -290,8 +290,6 @@ class IridiumPipe : private concurrency::OSThread
     uint32_t lastFixSampleMs = 0;
     void sampleFix(uint32_t now);
     void runBeacon(uint32_t now);
-    // True while the beacon keeps a disarmed modem up for its last message.
-    bool beaconHoldsModem(uint32_t now) const;
     bool beaconSettled() const;
 #endif
 #ifdef MESHSAT_IRIDIUM_ENABLE_PIN
